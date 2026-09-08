@@ -1,0 +1,67 @@
+from datetime import datetime, timedelta, timezone
+
+from gaia.core.db import commitments as commitments_db
+from gaia.core.db import meetings as meetings_db
+
+
+async def test_save_creates_contacts_and_commitments(conn, ana):
+    mid = await meetings_db.save(
+        conn,
+        ana,
+        summary="Showed Coral Gables to the Delgados",
+        source="text",
+        contact_names=["Maria Delgado"],
+        commitments=[{"description": "Send comps", "contact_name": "Maria Delgado"}],
+    )
+    assert mid is not None
+    open_items = await commitments_db.open_for(conn, ana, within_days=365)
+    assert [c["description"] for c in open_items] == ["Send comps"]
+
+
+async def test_happened_at_can_differ_from_now(conn, ana):
+    yesterday = datetime.now(timezone.utc) - timedelta(days=1)
+    mid = await meetings_db.save(
+        conn, ana, summary="Yesterday's showing", source="photo_notes", happened_at=yesterday
+    )
+    cur = await conn.execute("SELECT happened_at FROM meetings WHERE id = %s", (mid,))
+    assert (await cur.fetchone())["happened_at"].date() == yesterday.date()
+
+
+async def test_derived_rows_inherit_visibility_on_insert(conn, ana):
+    mid = await meetings_db.save(
+        conn,
+        ana,
+        summary="Sensitive divorce sale",
+        source="text",
+        visibility="private",
+        commitments=[{"description": "Call the attorney"}],
+    )
+    cur = await conn.execute(
+        "SELECT visibility FROM commitments WHERE meeting_id = %s", (mid,)
+    )
+    assert (await cur.fetchone())["visibility"] == "private"
+
+
+async def test_flipping_a_meeting_to_private_cascades(conn, ana):
+    mid = await meetings_db.save(
+        conn,
+        ana,
+        summary="Routine showing",
+        source="text",
+        commitments=[{"description": "Send comps"}],
+    )
+    await meetings_db.set_visibility(conn, ana, mid, "private")
+
+    cur = await conn.execute(
+        "SELECT visibility FROM commitments WHERE meeting_id = %s", (mid,)
+    )
+    assert (await cur.fetchone())["visibility"] == "private"
+
+
+async def test_open_commitments_are_scoped_by_ownership_not_visibility(conn, ana, sofia):
+    """Sofia's org-visible commitment is readable by Ana, but is not her work."""
+    await meetings_db.save(
+        conn, sofia, summary="Sofia's meeting", source="text",
+        commitments=[{"description": "Sofia's task"}],
+    )
+    assert await commitments_db.open_for(conn, ana, within_days=365) == []
