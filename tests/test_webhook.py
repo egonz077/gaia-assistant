@@ -120,3 +120,88 @@ def test_webhook_returns_before_the_turn_finishes(client, wa_user, monkeypatch):
     while not finished.is_set() and time.monotonic() < deadline:
         time.sleep(0.01)
     assert started.is_set() and finished.is_set(), "the debounced turn never ran at all"
+
+
+def _drain(queue, timeout: float = 3.0) -> None:
+    """Wait out every debounce timer and running turn, then settle.
+
+    Waiting on `_running` alone is not enough: a queued redelivery sits in
+    `_timers` until its debounce fires, so a turn that should never have been
+    created would not have been created *yet* when the assertion ran.
+    """
+    deadline = time.monotonic() + timeout
+    while (queue._timers or queue._running) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    time.sleep(0.2)
+
+
+def test_a_redelivered_message_is_a_no_op(client, wa_user, monkeypatch):
+    """Spec §9.2 requires this row and it was the one line of it never
+    written — and the one with a bug.
+
+    `seen` was checked at the webhook, but the row backing it was only written
+    inside handle_turn, after the debounce *and* after the per-user turn lock.
+    The gap was therefore not 3 seconds but the whole of any turn already in
+    flight — 10-30s on a photo, squarely inside Meta's retry window. A
+    redelivery in that gap passed the check, was queued as a fresh burst, and
+    ran as a second turn: the model saw the same message twice and she got two
+    replies to one.
+
+    Reproduced here by holding the first turn open while the redelivery
+    arrives, which is exactly the shape Meta retries into.
+    """
+    from gaia.main import queue
+
+    turns = []
+    release = threading.Event()
+
+    async def slow_handler(user, batch):
+        turns.append([m["id"] for m in batch])
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(queue, "_handler", slow_handler)
+    monkeypatch.setattr(queue, "_debounce", 0.01)
+
+    payload = {"entry": [{"changes": [{"value": {"messages": [
+        {"id": "wamid.dupe", "from": wa_user.wa_id, "type": "text", "text": {"body": "hi"}}
+    ]}}]}]}
+
+    assert _signed(client, payload).status_code == 200
+
+    deadline = time.monotonic() + 2.0
+    while not turns and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert turns, "the first turn never started"
+
+    # Meta redelivers while that turn is still running.
+    assert _signed(client, payload).status_code == 200
+    release.set()
+
+    _drain(queue)
+    assert turns == [["wamid.dupe"]], "the redelivery ran as a second turn"
+
+
+def test_a_redelivery_after_the_turn_finishes_is_also_a_no_op(client, wa_user, monkeypatch):
+    from gaia.main import queue
+
+    turns = []
+
+    async def handler(user, batch):
+        turns.append([m["id"] for m in batch])
+
+    monkeypatch.setattr(queue, "_handler", handler)
+    monkeypatch.setattr(queue, "_debounce", 0.01)
+
+    payload = {"entry": [{"changes": [{"value": {"messages": [
+        {"id": "wamid.late", "from": wa_user.wa_id, "type": "text", "text": {"body": "hi"}}
+    ]}}]}]}
+
+    _signed(client, payload)
+    deadline = time.monotonic() + 2.0
+    while not turns and time.monotonic() < deadline:
+        time.sleep(0.01)
+
+    _signed(client, payload)
+    _drain(queue)
+    assert turns == [["wamid.late"]]

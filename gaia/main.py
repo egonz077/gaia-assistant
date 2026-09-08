@@ -5,12 +5,11 @@ from fastapi import FastAPI, HTTPException, Request, Response
 
 from gaia.core import whatsapp
 from gaia.core.config import settings
-from gaia.core.db import messages as messages_db
 from gaia.core.db import users as users_db
 from gaia.core.db.migrate import run_migrations
 from gaia.core.db.pool import get_pool, tx
 from gaia.core.turns import TurnQueue
-from gaia.butler import handle_turn
+from gaia.butler import handle_turn, receive
 
 import gaia.capabilities  # noqa: F401  — importing populates the registry
 
@@ -69,7 +68,12 @@ async def inbound(request: Request) -> dict:
             if user is None:
                 log.info("ignoring message from unknown number %s", message["from"])
                 continue
-            if await messages_db.seen(conn, message["id"]):
+            # Logged here, in the same transaction as the dedup check and
+            # before the message is queued — not inside the turn, which may
+            # not start for the length of a whole preceding turn. See
+            # butler.receive.
+            if not await receive(conn, user, message):
+                log.info("ignoring redelivery of message %s", message["id"])
                 continue
         await queue.submit(user, message)
 

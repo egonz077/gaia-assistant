@@ -91,14 +91,52 @@ async def _apologize(wa, user: User) -> None:
         log.exception("failed to log the apology for user %s", user.id)
 
 
-async def _log_inbound(conn, user: User, batch: list[dict], wa) -> tuple[list[dict], list[str]]:
-    """Log every message in the burst, turning a single unreadable image into
-    a note in the transcript instead of losing the whole batch.
+PHOTO_CAPTION_FALLBACK = "Here are my meeting notes."
+PHOTO_FAILED_NOTE = "[a photo in this message could not be downloaded]"
+
+
+def transcript_text(message: dict) -> str:
+    """How one inbound message reads in her history. A photo's caption often
+    is the content — "offer at 580, wants to close by Nov" — so it is what
+    gets written rather than a bare marker."""
+    if message["type"] == "image":
+        return f"[photo] {message.get('caption') or PHOTO_CAPTION_FALLBACK}"
+    return message["text"]
+
+
+async def receive(conn, user: User, message: dict) -> bool:
+    """Log one inbound message, and report whether it is new.
+
+    The dedup check and the row that backs it are one transaction, and both
+    happen at the webhook, before the message is queued. Spec §5 step 4:
+    "Log the inbound message and take the user's turn lock… Logging before
+    reading is crash-safe for dedup."
+
+    Checking `seen` at the webhook while writing the row inside handle_turn
+    left a window that was not the 3-second debounce but the whole of any
+    turn already in flight — 10 to 30 seconds on a photo, squarely inside
+    Meta's retry window. A redelivery in that window passed the check, was
+    queued as a fresh burst and ran as a second turn: the model saw the same
+    message twice and she got two replies to one message. `ON CONFLICT
+    (wa_msg_id) DO NOTHING` protected the table, never the behaviour.
+    """
+    if await messages_db.seen(conn, message["id"]):
+        return False
+    await users_db.touch_inbound(conn, user)
+    await messages_db.log(conn, user, "user", transcript_text(message), message["id"])
+    return True
+
+
+async def _build_blocks(conn, user: User, batch: list[dict], wa) -> tuple[list[dict], list[str]]:
+    """Turn a debounced burst into content blocks for the model, turning a
+    single unreadable image into a note in the transcript instead of losing
+    the whole batch.
 
     `download_media` failing for one photo must not roll back — and thereby
     silently drop — every other message in the same burst. Each failure is
-    logged as its own visible fact, both to the user's history and as a text
-    block the model sees, so its reply can tell her which part did not land.
+    recorded as its own visible fact, both amended into the row `receive`
+    already wrote and as a text block the model sees, so its reply can tell
+    her which part did not land.
     """
     blocks, wa_ids = [], []
     for message in batch:
@@ -110,29 +148,27 @@ async def _log_inbound(conn, user: User, batch: list[dict], wa) -> tuple[list[di
                 log.exception(
                     "failed to download image %s for user %s", message["image_id"], user.id
                 )
-                # The caption often carries the actual content — "offer at
-                # 580, wants to close by Nov" — and is the one thing of hers
-                # we still have on this path. Surface it alongside the
-                # failure note rather than discarding it along with the
-                # photo she can't easily resend from memory.
-                note = "[a photo in this message could not be downloaded]"
+                # The caption is the one thing of hers we still have on this
+                # path. Surface it alongside the failure note rather than
+                # discarding it along with the photo she can't easily resend
+                # from memory.
                 caption = message.get("caption")
                 if caption:
                     blocks.append({"type": "text", "text": caption})
-                blocks.append({"type": "text", "text": note})
-                logged = f"{caption}\n{note}" if caption else note
-                await messages_db.log(conn, user, "user", logged, message["id"])
+                blocks.append({"type": "text", "text": PHOTO_FAILED_NOTE})
+                logged = f"{caption}\n{PHOTO_FAILED_NOTE}" if caption else PHOTO_FAILED_NOTE
+                await messages_db.set_content(conn, user, message["id"], logged)
                 continue
             blocks.append({
                 "type": "image",
                 "source": {"type": "base64", **media},
             })
-            caption = message.get("caption") or "Here are my meeting notes."
-            blocks.append({"type": "text", "text": caption})
-            await messages_db.log(conn, user, "user", f"[photo] {caption}", message["id"])
+            blocks.append({
+                "type": "text",
+                "text": message.get("caption") or PHOTO_CAPTION_FALLBACK,
+            })
         else:
             blocks.append({"type": "text", "text": message["text"]})
-            await messages_db.log(conn, user, "user", message["text"], message["id"])
     return blocks, wa_ids
 
 
@@ -146,8 +182,9 @@ async def handle_turn(user: User, batch: list[dict], wa) -> None:
     on a photo. The loop is handed the pool instead, and each tool call opens
     and commits its own transaction (see Registry.dispatch).
 
-    The inbound log is committed *before* the agent loop runs, deliberately
-    splitting what was one transaction in the original plan. The agent loop
+    The inbound log is already committed by the time this runs — `receive`
+    writes it at the webhook, in the same transaction as the dedup check —
+    which is deliberately not one transaction with the reply. The agent loop
     calls the Anthropic API and arbitrary capability tools — the riskiest,
     slowest part of the turn — and the webhook has already returned 200
     by the time this runs, so nothing will ever retry it. If that part fails
@@ -166,10 +203,9 @@ async def handle_turn(user: User, batch: list[dict], wa) -> None:
     """
     try:
         async with tx() as conn:
-            await users_db.touch_inbound(conn, user)
-            blocks, wa_ids = await _log_inbound(conn, user, batch, wa)
+            blocks, wa_ids = await _build_blocks(conn, user, batch, wa)
     except Exception:
-        log.exception("failed logging inbound messages for user %s", user.id)
+        log.exception("failed preparing inbound messages for user %s", user.id)
         await _apologize(wa, user)
         return
 

@@ -24,6 +24,19 @@ def _patch_anthropic(monkeypatch, client):
     monkeypatch.setattr("anthropic.AsyncAnthropic", lambda: client)
 
 
+async def _receive(user, batch):
+    """What the webhook does before a burst is queued: log each inbound
+    message in the same transaction as the dedup check (butler.receive).
+    Inbound logging lives there, not in handle_turn, so that a redelivery
+    arriving mid-turn is recognised as a duplicate rather than run twice."""
+    from gaia.butler import receive
+    from gaia.core.db.pool import tx
+
+    async with tx() as conn:
+        for message in batch:
+            await receive(conn, user, message)
+
+
 class _BoomClient:
     """Simulates the agent loop blowing up — an Anthropic API error, a
     dropped connection, anything unhandled inside run_agent."""
@@ -103,6 +116,7 @@ async def test_inbound_messages_survive_an_agent_loop_failure(wa_user, monkeypat
     _patch_anthropic(monkeypatch, _BoomClient())
 
     batch = [{"id": "wamid.durable", "type": "text", "text": "book Tuesday with Marco"}]
+    await _receive(wa_user, batch)
     await handle_turn(wa_user, batch, FakeWhatsApp())
 
     async with tx() as conn:
@@ -126,6 +140,7 @@ async def test_failed_image_download_still_surfaces_the_caption(wa_user, monkeyp
 
     caption = "Delgado showing, offer at 580, wants to close by Nov"
     batch = [{"id": "wamid.cap", "type": "image", "image_id": "bad-media", "caption": caption}]
+    await _receive(wa_user, batch)
     await handle_turn(wa_user, batch, wa)
 
     [request] = client.requests
@@ -133,6 +148,18 @@ async def test_failed_image_download_still_surfaces_the_caption(wa_user, monkeyp
     texts = [b["text"] for b in last_message["content"] if b["type"] == "text"]
     assert caption in texts
     assert any("could not be downloaded" in t for t in texts)
+
+    # And her own history says so too. The row was written at the webhook
+    # before the photo was ever fetched, so the failure has to amend it — a
+    # second insert would hit ON CONFLICT DO NOTHING and the note would
+    # vanish, leaving history claiming the photo arrived fine.
+    from gaia.core.db import messages as messages_db
+    from gaia.core.db.pool import tx
+
+    async with tx() as conn:
+        history = await messages_db.recent(conn, wa_user)
+    assert caption in history[0]["content"]
+    assert "could not be downloaded" in history[0]["content"]
 
 
 async def test_apology_is_logged_to_history(wa_user, monkeypatch):
@@ -145,6 +172,7 @@ async def test_apology_is_logged_to_history(wa_user, monkeypatch):
     _patch_anthropic(monkeypatch, _BoomClient())
 
     batch = [{"id": "wamid.logged", "type": "text", "text": "book Tuesday"}]
+    await _receive(wa_user, batch)
     await handle_turn(wa_user, batch, FakeWhatsApp())
 
     async with tx() as conn:

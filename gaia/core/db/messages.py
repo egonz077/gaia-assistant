@@ -9,6 +9,21 @@ async def log(conn, user: User, role: str, content: str, wa_msg_id: str | None =
     )
 
 
+async def set_content(conn, user: User, wa_msg_id: str, content: str) -> None:
+    """Rewrite an already-logged inbound message.
+
+    The inbound row is written at the webhook, before the burst is debounced
+    and before a photo is fetched, so a download that fails afterwards has to
+    amend that row. Inserting instead would hit `ON CONFLICT (wa_msg_id) DO
+    NOTHING` and the failure note would simply vanish, leaving her history
+    claiming the photo arrived fine.
+    """
+    await conn.execute(
+        "UPDATE messages SET content = %s WHERE wa_msg_id = %s AND user_id = %s",
+        (content, wa_msg_id, user.id),
+    )
+
+
 async def seen(conn, wa_msg_id: str) -> bool:
     """Dedup is roster-independent: WhatsApp redelivers regardless of who sent
     it, so this deliberately does not take a user as its second parameter —
