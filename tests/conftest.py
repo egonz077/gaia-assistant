@@ -14,7 +14,11 @@ import pathlib
 import psycopg
 import pytest
 import pytest_asyncio
+from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
+
+from gaia.core.db import users as users_db
+from gaia.core.db.migrate import run_migrations
 
 PGDATA = pathlib.Path("/tmp/claude-1000/gaia_pgdata")
 
@@ -42,3 +46,26 @@ async def pool(pg_uri):
     await p.open(wait=True)
     yield p
     await p.close()
+
+
+@pytest_asyncio.fixture
+async def migrated(pool):
+    await run_migrations(pool)
+    return pool
+
+
+@pytest_asyncio.fixture
+async def conn(migrated):
+    async with migrated.connection() as c:
+        c.row_factory = dict_row
+        yield c
+
+
+@pytest_asyncio.fixture
+async def ana(conn):
+    return await users_db.create_user(conn, name="Ana", wa_id="13055550001")
+
+
+@pytest_asyncio.fixture
+async def sofia(conn):
+    return await users_db.create_user(conn, name="Sofia", wa_id="13055550002")
