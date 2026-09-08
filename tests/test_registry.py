@@ -14,12 +14,10 @@ async def _echo(conn, user, args):
 
 PUBLIC = Capability(
     name="public_cap",
-    description="Everyone",
     tools=(Tool("echo", "Echo a value", {"type": "object", "properties": {}}, _echo),),
 )
 ADMIN_ONLY = Capability(
     name="admin_cap",
-    description="Admins only",
     tools=(Tool("secret", "Secret", {"type": "object", "properties": {}}, _echo),),
     allowed_roles=frozenset({"admin"}),
 )
@@ -66,7 +64,6 @@ async def test_dispatch_does_not_leak_exception_internals_to_the_model(registry,
 
     boom_cap = Capability(
         name="boom_cap",
-        description="Always fails",
         tools=(Tool("boom", "Boom", {"type": "object", "properties": {}}, _boom),),
     )
     registry.register(boom_cap)
@@ -124,7 +121,6 @@ async def test_a_failing_tool_does_not_destroy_the_turns_earlier_work(
 
     registry.register(Capability(
         name="turn_cap",
-        description="A turn's worth of tool calls",
         tools=(
             Tool("file_it", "File", {"type": "object", "properties": {}}, _file_it),
             Tool("bad_uuid", "Boom", {"type": "object", "properties": {}}, _bad_uuid),
@@ -162,19 +158,19 @@ class TestVisibleTo:
     directly, independent of Registry/DB fixtures — this is pure logic."""
 
     def test_both_allowlists_none_is_visible_to_anyone(self):
-        cap = Capability(name="c", description="d", tools=())
+        cap = Capability(name="c", tools=())
         assert cap.visible_to(_user()) is True
 
     def test_role_allowlist_matching_role_is_visible(self):
         cap = Capability(
-            name="c", description="d", tools=(),
+            name="c", tools=(),
             allowed_roles=frozenset({"admin"}),
         )
         assert cap.visible_to(_user(role="admin")) is True
 
     def test_role_allowlist_nonmatching_role_is_hidden(self):
         cap = Capability(
-            name="c", description="d", tools=(),
+            name="c", tools=(),
             allowed_roles=frozenset({"admin"}),
         )
         assert cap.visible_to(_user(role="agent")) is False
@@ -182,14 +178,14 @@ class TestVisibleTo:
     def test_user_id_allowlist_matching_id_is_visible(self):
         uid = uuid4()
         cap = Capability(
-            name="c", description="d", tools=(),
+            name="c", tools=(),
             allowed_user_ids=frozenset({uid}),
         )
         assert cap.visible_to(_user(id=uid, role="agent")) is True
 
     def test_user_id_allowlist_nonmatching_id_is_hidden(self):
         cap = Capability(
-            name="c", description="d", tools=(),
+            name="c", tools=(),
             allowed_user_ids=frozenset({uuid4()}),
         )
         assert cap.visible_to(_user(id=uuid4(), role="agent")) is False
@@ -197,7 +193,7 @@ class TestVisibleTo:
     def test_both_allowlists_set_matching_either_one_is_visible(self):
         uid = uuid4()
         cap = Capability(
-            name="c", description="d", tools=(),
+            name="c", tools=(),
             allowed_roles=frozenset({"admin"}),
             allowed_user_ids=frozenset({uid}),
         )

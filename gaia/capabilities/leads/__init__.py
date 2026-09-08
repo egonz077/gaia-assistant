@@ -10,7 +10,6 @@ STATUSES = ["new", "active", "under_contract", "closed", "lost", "dormant"]
 
 CAPABILITY = Capability(
     name="leads",
-    description="Tracking deals and follow-ups",
     prompt_fragment=(
         "\nWhen the user mentions someone who might transact, create a lead with a next "
         "action date so it reaches their morning digest. A lead without a next_action_at "

@@ -74,7 +74,6 @@ SET_VISIBILITY_SCHEMA = {
 
 CAPABILITY = Capability(
     name="meetings",
-    description="Filing and recalling meeting notes",
     prompt_fragment=(
         "\nWhen you are asked to keep something off the company record, pass private: true "
         "to save_meeting. Otherwise colleagues at Gaia can see it, which is the default.\n"

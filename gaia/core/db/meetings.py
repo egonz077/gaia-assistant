@@ -2,7 +2,6 @@ from datetime import datetime
 from uuid import UUID
 
 from gaia.core.db import contacts as contacts_db
-from gaia.core.db.scope import visible
 from gaia.core.models import User
 
 
@@ -63,12 +62,3 @@ async def set_visibility(conn, user: User, meeting_id: UUID, visibility: str) ->
         (visibility, meeting_id, user.id),
     )
     return await cur.fetchone() is not None
-
-
-async def recent(conn, user: User, limit: int = 10) -> list[dict]:
-    cur = await conn.execute(
-        f"""SELECT t.id, t.summary, t.happened_at FROM meetings t
-            WHERE {visible('t')} ORDER BY t.happened_at DESC LIMIT %(limit)s""",
-        {"scope_user_id": user.id, "limit": limit},
-    )
-    return await cur.fetchall()

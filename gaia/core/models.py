@@ -10,7 +10,3 @@ class User:
     role: str
     timezone: str
     active: bool
-
-    @property
-    def is_admin(self) -> bool:
-        return self.role == "admin"

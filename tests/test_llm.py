@@ -20,7 +20,7 @@ async def test_runs_a_tool_then_replies(ana, migrated):
 
     reg = Registry()
     reg.register(
-        Capability("c", "d", (Tool("save", "Save", {"type": "object", "properties": {}}, handler),))
+        Capability("c", (Tool("save", "Save", {"type": "object", "properties": {}}, handler),))
     )
 
     client = FakeAnthropic([
@@ -52,7 +52,7 @@ async def test_iteration_cap_terminates(ana, migrated):
 
     reg = Registry()
     reg.register(
-        Capability("c", "d", (Tool("loop", "Loop", {"type": "object", "properties": {}}, handler),))
+        Capability("c", (Tool("loop", "Loop", {"type": "object", "properties": {}}, handler),))
     )
     client = FakeAnthropic(
         [FakeResponse([ToolUseBlock(f"tu_{i}", "loop", {})], stop_reason="tool_use")
@@ -110,7 +110,6 @@ async def test_batches_multiple_tool_calls_into_one_message(ana, migrated):
     reg.register(
         Capability(
             "c",
-            "d",
             (
                 Tool("tool_a", "A", {"type": "object", "properties": {}}, handler_a),
                 Tool("tool_b", "B", {"type": "object", "properties": {}}, handler_b),
@@ -173,7 +172,7 @@ async def test_does_not_mutate_the_callers_messages_list_with_tool_use(ana, migr
 
     reg = Registry()
     reg.register(
-        Capability("c", "d", (Tool("save", "Save", {"type": "object", "properties": {}}, handler),))
+        Capability("c", (Tool("save", "Save", {"type": "object", "properties": {}}, handler),))
     )
     client = FakeAnthropic(
         [

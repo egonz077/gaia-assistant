@@ -11,8 +11,10 @@ What this actually proves, none of which the unit suite can:
     carrying cache_control
   - all registered tool schemas are accepted by the API
   - the agent loop runs a real tool call and feeds the result back
-  - what the assistant actually SAYS — the system prompt has never been read
-    by a model before this
+  - what the assistant actually SAYS, using the *assembled* prompt — base
+    prompt plus both capability fragments plus the live roster, built by
+    gaia.butler.build_system_prompt, not a copy of it
+  - that the two system blocks go out in the right order, stable half first
 """
 
 import asyncio
@@ -32,6 +34,7 @@ for line in pathlib.Path(".env").read_text().splitlines():
 from anthropic import AsyncAnthropic  # noqa: E402
 
 import gaia.capabilities  # noqa: F401,E402  — populates the registry
+from gaia.butler import build_system_prompt  # noqa: E402
 from gaia.capabilities.base import registry  # noqa: E402
 from gaia.core.config import settings  # noqa: E402
 from gaia.core.db import users as users_db  # noqa: E402
@@ -39,23 +42,12 @@ from gaia.core.db.migrate import run_migrations  # noqa: E402
 from gaia.core.db.pool import get_pool, tx  # noqa: E402
 from gaia.core import llm  # noqa: E402
 
-BASE_PROMPT = """You are the assistant for {name}, an agent at the Gaia real-estate \
-company, reachable over WhatsApp.
-
-When she sends meeting notes — typed or photographed handwriting — transcribe if needed, \
-then extract a short summary, the people involved, commitments made, and any follow-up \
-dates. Save them with your tools. Echo back what you understood and ask her to confirm \
-anything ambiguous: names, numbers, dates.
-
-Answer questions about past meetings, leads and contacts using your tools. Never contact \
-third parties.
-
-Style: brief and warm, like a text message. No markdown headers or bullet lists.
-
-Today is 2026-09-08 in her timezone (America/New_York).
-People she has worked with recently: (nobody yet)
-Use lookup_contact for details on any of them.
-"""
+# The prompt is built, not copied. A duplicated BASE_PROMPT here meant this
+# script's central claim — "the system prompt has never been read by a model
+# before this" — was true of a stale copy of two thirds of it, and the two
+# capability prompt fragments, which are a third of the product surface and
+# the part that governs the privacy vocabulary, had still never been in front
+# of a model.
 
 
 async def fake_embed(texts, input_type="document"):
@@ -91,8 +83,16 @@ async def main() -> int:
 
     client = AsyncAnthropic()  # zero-arg: SDK resolves creds from the environment
     tool_defs = registry.tool_defs(user)
+    async with tx(pool) as conn:
+        system = await build_system_prompt(conn, user)
+
     print(f"model      : {settings.model}")
     print(f"tools sent : {[t['name'] for t in tool_defs]}")
+    print(f"system     : {len(system)} blocks, {sum(len(b) for b in system)} chars")
+    print("=" * 72)
+    for i, block in enumerate(system):
+        print(f"--- system block {i}{' (cached prefix)' if i == 0 else ''} ---")
+        print(block.strip())
     print("=" * 72)
 
     failures = 0
@@ -100,10 +100,7 @@ async def main() -> int:
         print(f"\n### {label}\n>>> {text}\n")
         messages = [{"role": "user", "content": [{"type": "text", "text": text}]}]
         try:
-            reply = await llm.run_agent(
-                client, pool, user, messages,
-                BASE_PROMPT.format(name=user.name), tool_defs,
-            )
+            reply = await llm.run_agent(client, pool, user, messages, system, tool_defs)
             marker = "  (FALLBACK — model produced nothing usable)" if reply == llm.FALLBACK_TEXT else ""
             print(f"<<< {reply}{marker}")
             if reply == llm.FALLBACK_TEXT:

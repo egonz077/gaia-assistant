@@ -31,7 +31,6 @@ class Tool:
 @dataclass(frozen=True)
 class Capability:
     name: str
-    description: str
     tools: tuple[Tool, ...]
     prompt_fragment: str = ""
     allowed_roles: frozenset[str] | None = None
@@ -52,9 +51,6 @@ class Registry:
 
     def register(self, capability: Capability) -> None:
         self._capabilities.append(capability)
-
-    def all(self) -> list[Capability]:
-        return list(self._capabilities)
 
     def for_user(self, user: User) -> list[Capability]:
         return [c for c in self._capabilities if c.visible_to(user)]
