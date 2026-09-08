@@ -51,17 +51,20 @@ async def merge_profile(conn, user: User, contact_id: UUID, update: str) -> None
     """Append a fact, then trim from the front if the profile exceeds the cap.
 
     Append-only accretion is inherited from the prototype; the cap keeps it
-    bounded until a consolidation pass rewrites profiles properly.
+    bounded until a consolidation pass rewrites profiles properly. Both
+    statements are scoped by `visible()` — a caller cannot write into a
+    contact they cannot read, even one whose id they somehow obtained
+    outside a scoped query.
     """
     await conn.execute(
-        """UPDATE contacts
-           SET profile = CASE WHEN profile = '' THEN %(u)s ELSE profile || ' | ' || %(u)s END,
+        f"""UPDATE contacts t
+           SET profile = CASE WHEN t.profile = '' THEN %(u)s ELSE t.profile || ' | ' || %(u)s END,
                updated_at = now()
-           WHERE id = %(id)s""",
-        {"u": update, "id": contact_id},
+           WHERE t.id = %(id)s AND {visible('t')}""",
+        {"u": update, "id": contact_id, "scope_user_id": user.id},
     )
     await conn.execute(
-        """UPDATE contacts SET profile = right(profile, %(cap)s)
-           WHERE id = %(id)s AND length(profile) > %(cap)s""",
-        {"cap": PROFILE_CAP, "id": contact_id},
+        f"""UPDATE contacts t SET profile = right(t.profile, %(cap)s)
+           WHERE t.id = %(id)s AND length(t.profile) > %(cap)s AND {visible('t')}""",
+        {"cap": PROFILE_CAP, "id": contact_id, "scope_user_id": user.id},
     )

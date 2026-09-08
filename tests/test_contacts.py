@@ -46,3 +46,24 @@ async def test_profile_is_capped(conn, ana):
         await contacts_db.merge_profile(conn, ana, cid, f"fact number {i}")
     found = await contacts_db.lookup(conn, ana, "Maria Delgado")
     assert len(found["profile"]) <= contacts_db.PROFILE_CAP
+
+
+async def test_merge_profile_cannot_write_into_another_users_private_contact(conn, ana, sofia):
+    cid = await contacts_db.create_contact(conn, ana, name="Maria Delgado", visibility="private")
+    await contacts_db.merge_profile(conn, sofia, cid, "wants a pool")
+    found = await contacts_db.lookup(conn, ana, "Maria Delgado")
+    assert found["profile"] == ""
+
+
+async def test_merge_profile_works_for_the_owner_of_a_private_contact(conn, ana):
+    cid = await contacts_db.create_contact(conn, ana, name="Maria Delgado", visibility="private")
+    await contacts_db.merge_profile(conn, ana, cid, "wants a pool")
+    found = await contacts_db.lookup(conn, ana, "Maria Delgado")
+    assert "wants a pool" in found["profile"]
+
+
+async def test_merge_profile_works_for_a_colleague_on_an_org_visible_contact(conn, ana, sofia):
+    cid = await contacts_db.create_contact(conn, ana, name="Maria Delgado", visibility="org")
+    await contacts_db.merge_profile(conn, sofia, cid, "wants a pool")
+    found = await contacts_db.lookup(conn, ana, "Maria Delgado")
+    assert "wants a pool" in found["profile"]
