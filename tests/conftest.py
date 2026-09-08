@@ -10,8 +10,6 @@ os.environ.setdefault("WA_VERIFY_TOKEN", "test-verify")
 os.environ.setdefault("WA_PHONE_NUMBER_ID", "1234567890")
 os.environ.setdefault("DATABASE_URL", "postgresql://placeholder/overridden_by_pool_fixture")
 
-import os as _os
-
 import psycopg
 import pytest
 import pytest_asyncio
@@ -23,7 +21,7 @@ from gaia.core.db.migrate import run_migrations
 
 # The compose `db` service — pgvector/pgvector:pg17, the exact production image.
 # Start it with: docker compose up -d db
-ADMIN_DSN = _os.environ.get(
+ADMIN_DSN = os.environ.get(
     "TEST_ADMIN_DSN", "postgresql://gaia:devpassword@127.0.0.1:5432/gaia"
 )
 
