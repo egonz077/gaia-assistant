@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import io
+import json
 
 import httpx
 import pytest
@@ -28,6 +29,15 @@ def test_parse_extracts_an_image_with_a_caption():
     [msg] = whatsapp.parse_messages(payload)
     assert msg["image_id"] == "media.9"
     assert msg["caption"] == "my notes"
+
+
+def test_parse_image_without_caption_yields_none():
+    payload = {"entry": [{"changes": [{"value": {"messages": [
+        {"id": "wamid.4", "from": "1305", "type": "image", "image": {"id": "media.10"}}
+    ]}}]}]}
+    [msg] = whatsapp.parse_messages(payload)
+    assert msg["image_id"] == "media.10"
+    assert msg["caption"] is None
 
 
 def test_parse_ignores_status_callbacks():
@@ -119,3 +129,35 @@ async def test_download_media_returns_downscaled_base64(monkeypatch):
     assert result["media_type"] == "image/jpeg"
     out = Image.open(io.BytesIO(base64.b64decode(result["data"])))
     assert max(out.size) == MAX_EDGE
+
+
+@pytest.mark.asyncio
+async def test_send_template_sends_correct_payload_shape(monkeypatch):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"messages": [{"id": "wamid.out"}]})
+
+    _stub_async_client(monkeypatch, handler)
+    client = whatsapp.WhatsAppClient(token="tok", phone_number_id="123")
+
+    await client.send_template("13055550001", "Good morning! You have 3 new leads.")
+
+    assert len(calls) == 1
+    body = json.loads(calls[0].read())
+
+    assert body["messaging_product"] == "whatsapp"
+    assert body["to"] == "13055550001"
+    assert body["type"] == "template"
+    assert body["template"]["name"] == whatsapp.DIGEST_TEMPLATE
+    assert "code" in body["template"]["language"]
+
+    components = body["template"]["components"]
+    assert len(components) == 1
+    [component] = components
+    assert component["type"] == "body"
+    assert len(component["parameters"]) == 1
+    [parameter] = component["parameters"]
+    assert parameter["type"] == "text"
+    assert parameter["text"] == "Good morning! You have 3 new leads."
