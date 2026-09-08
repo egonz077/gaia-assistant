@@ -1,0 +1,19 @@
+# LOCAL DEVELOPMENT ONLY. Never use this on the droplet.
+#
+# docker-compose.yml deliberately publishes no database port: production
+# Postgres is reachable only on the compose network (deploy/README.md, spec
+# §8.3). The test suite, however, runs on the host and connects over TCP, so
+# local dev needs 5432 published on loopback.
+#
+# That exception is opted into explicitly rather than left on by default:
+#
+#     docker compose -f docker-compose.yml -f deploy/compose.dev.yml up -d db
+#     .venv/bin/python -m pytest -q
+#
+# This file is NOT named docker-compose.override.yml on purpose — compose
+# auto-loads that name, so an override file would silently republish the port
+# on the droplet the moment the repo was cloned there.
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"

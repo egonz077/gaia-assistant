@@ -17,7 +17,12 @@ curl -fsSL https://get.docker.com | sh
 ```
 
 **DO cloud firewall:** inbound 80 and 443 from anywhere, 22 from your IP only.
-Postgres publishes no ports and is reachable only on the compose network.
+Postgres publishes no ports and is reachable only on the compose network —
+`docker-compose.yml` has no `ports:` block on `db`, and there is deliberately no
+auto-loaded `docker-compose.override.yml` that could quietly add one here. The
+only thing that publishes 5432 is `deploy/compose.dev.yml`, which compose does
+not load unless you name it with `-f`; it exists for the test suite on a
+developer's machine and must never be passed on the droplet.
 
 ## DNS
 
@@ -50,7 +55,10 @@ yet.
    with a challenge to confirm it before accepting the subscription, so
    Caddy and the app must already be up and answering — see the "Return to
    Meta" note at the end of First run.
-4. **A `daily_digest` utility template, one body parameter.** This is a
+4. **A `daily_digest` utility template, one body parameter, language `en`.**
+   Register it as `en`, not `en_US` — `gaia/core/whatsapp.py` sends
+   `{"code": "en"}` and Meta matches the language tag exactly, so a template
+   approved under `en_US` is simply not found at send time. This is a
    prerequisite, not a nice-to-have: WhatsApp only allows free-form
    (non-template) sends within 24 hours of the user's last inbound message —
    outside that window, a free-form send is rejected outright. A
@@ -65,6 +73,9 @@ yet.
 ```bash
 git clone <repo> && cd gaia-assistant
 cp .env.example .env      # fill in
+# DB_PASSWORD ships as CHANGE_ME_... and has no default in docker-compose.yml:
+# compose refuses to start until you replace it. Generate one:
+openssl rand -base64 32
 chmod 600 .env             # it holds API keys, WhatsApp secrets, and Spaces
                             # credentials — restrict it to the deploying user
 docker compose up -d --build
@@ -121,6 +132,12 @@ backup one night does not push the next one later. If a night's backup
 fails, `backup failed` is logged and the loop continues to the next 03:00
 rather than dying; check `docker compose logs backup` if you suspect a
 night was missed.
+
+A successful run logs one line naming the dump it uploaded and how many old
+objects it pruned, e.g. `backed up gaia-20260908T030001Z.dump; pruned 1
+backup(s) dated before 20260809`. `pruned 0` on a bucket older than 30 days
+means retention is not working, which is worth noticing — a silent no-op and a
+working prune must not look the same.
 
 Requires in `.env`: `SPACES_BUCKET`, `SPACES_ENDPOINT`, `AWS_ACCESS_KEY_ID`,
 `AWS_SECRET_ACCESS_KEY` (a Spaces access key pair from the DO control panel —

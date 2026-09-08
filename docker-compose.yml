@@ -5,10 +5,17 @@ services:
     environment:
       POSTGRES_DB: gaia
       POSTGRES_USER: gaia
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-devpassword}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env — see .env.example}
       TZ: America/New_York
-    ports:
-      - "127.0.0.1:5432:5432"
+    # Deliberately no `ports:`. Postgres is reachable only on the compose
+    # network, which is what deploy/README.md and spec 8.3 promise; an exposed
+    # 5432 holding a brokerage's client book is how these get owned.
+    #
+    # The test suite does need it published on the host. That is a local-only
+    # exception, opted into explicitly:
+    #     docker compose -f docker-compose.yml -f deploy/compose.dev.yml up -d db
+    # It lives in a file compose does NOT auto-load, so it cannot follow the
+    # repo onto the droplet by accident (a `docker-compose.override.yml` would).
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -23,10 +30,11 @@ services:
     env_file: .env
     environment:
       TZ: America/New_York
-      # .env's DATABASE_URL is for a host process talking to the published
-      # port; service `environment:` beats `env_file:`, so this is what the
-      # app container actually uses to reach `db` over the compose network.
-      DATABASE_URL: postgresql://gaia:${DB_PASSWORD:-devpassword}@db:5432/gaia
+      # .env's DATABASE_URL is for a host process talking to the port that
+      # deploy/compose.dev.yml publishes locally; service `environment:` beats
+      # `env_file:`, so this is what the app container actually uses to reach
+      # `db` over the compose network.
+      DATABASE_URL: postgresql://gaia:${DB_PASSWORD:?set DB_PASSWORD in .env}@db:5432/gaia
     depends_on:
       db:
         condition: service_healthy
@@ -37,10 +45,11 @@ services:
     env_file: .env
     environment:
       TZ: America/New_York
-      # .env's DATABASE_URL is for a host process talking to the published
-      # port; service `environment:` beats `env_file:`, so this is what the
-      # jobs container actually uses to reach `db` over the compose network.
-      DATABASE_URL: postgresql://gaia:${DB_PASSWORD:-devpassword}@db:5432/gaia
+      # .env's DATABASE_URL is for a host process talking to the port that
+      # deploy/compose.dev.yml publishes locally; service `environment:` beats
+      # `env_file:`, so this is what the jobs container actually uses to reach
+      # `db` over the compose network.
+      DATABASE_URL: postgresql://gaia:${DB_PASSWORD:?set DB_PASSWORD in .env}@db:5432/gaia
     command: ["python", "-m", "gaia.jobs.digest"]
     depends_on:
       db:
@@ -51,7 +60,7 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      PGPASSWORD: ${DB_PASSWORD:-devpassword}
+      PGPASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
       TZ: America/New_York
     volumes:
       - ./deploy:/deploy:ro
@@ -80,7 +89,12 @@ services:
   caddy:
     image: caddy:2
     restart: unless-stopped
-    env_file: .env          # without this {$DOMAIN} expands to nothing
+    environment:
+      # DOMAIN only — without it {$DOMAIN} in the Caddyfile expands to nothing.
+      # Deliberately not `env_file: .env`: that handed the public-facing TLS
+      # terminator the Anthropic key, the WhatsApp token and the database
+      # password, none of which it has any use for.
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
     ports:
       - "80:80"
       - "443:443"
