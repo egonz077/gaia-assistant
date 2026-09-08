@@ -17,5 +17,33 @@ services:
       timeout: 3s
       retries: 10
 
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: America/New_York
+      # .env's DATABASE_URL is for a host process talking to the published
+      # port; service `environment:` beats `env_file:`, so this is what the
+      # app container actually uses to reach `db` over the compose network.
+      DATABASE_URL: postgresql://gaia:${DB_PASSWORD:-devpassword}@db:5432/gaia
+    depends_on:
+      db:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    env_file: .env          # without this {$DOMAIN} expands to nothing
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+    depends_on:
+      - app
+
 volumes:
   pgdata:
+  caddy_data:
