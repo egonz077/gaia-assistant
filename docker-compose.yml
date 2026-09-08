@@ -31,6 +31,21 @@ services:
       db:
         condition: service_healthy
 
+  jobs:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: America/New_York
+      # .env's DATABASE_URL is for a host process talking to the published
+      # port; service `environment:` beats `env_file:`, so this is what the
+      # jobs container actually uses to reach `db` over the compose network.
+      DATABASE_URL: postgresql://gaia:${DB_PASSWORD:-devpassword}@db:5432/gaia
+    command: ["python", "-m", "gaia.jobs.digest"]
+    depends_on:
+      db:
+        condition: service_healthy
+
   caddy:
     image: caddy:2
     restart: unless-stopped
