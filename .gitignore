@@ -31,3 +31,7 @@ Thumbs.db
 # local dev env (docker unavailable in this WSL distro)
 .venv/
 .pgdata/
+
+# transcription eval fixtures — real client notes, never commit
+evals/notes/
+evals/expected/
