@@ -46,6 +46,23 @@ services:
       db:
         condition: service_healthy
 
+  backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PGPASSWORD: ${DB_PASSWORD}
+      TZ: America/New_York
+    volumes:
+      - ./deploy:/deploy:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "apk add --no-cache aws-cli >/dev/null &&
+       while true; do sleep 86400; /deploy/backup.sh || echo 'backup failed'; done"
+    depends_on:
+      db:
+        condition: service_healthy
+
   caddy:
     image: caddy:2
     restart: unless-stopped
