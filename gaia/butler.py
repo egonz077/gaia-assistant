@@ -47,11 +47,29 @@ async def build_system_prompt(conn, user: User) -> str:
 
 async def _apologize(wa, user: User) -> None:
     """Best-effort: a failed apology must never mask the original failure,
-    or blow up the turn a second time."""
+    or blow up the turn a second time.
+
+    Logged as her assistant turn only once the send actually succeeds — a
+    logged-but-undelivered apology would tell her history something she was
+    never told. Without this row at all, when she resends after a failure
+    the model sees two of her messages back to back with no sign anything
+    went wrong, and can't say "sorry, that one didn't land, I've got it now."
+    Logging opens its own short transaction, since the inbound messages
+    were already committed separately by this point; if that transaction
+    can't even be opened (no database reachable), this still degrades
+    quietly rather than raising a second failure on top of the first.
+    """
     try:
         await wa.send_text(user.wa_id, APOLOGY_TEXT)
     except Exception:
         log.exception("failed to send the apology to user %s", user.id)
+        return
+
+    try:
+        async with tx() as conn:
+            await messages_db.log(conn, user, "assistant", APOLOGY_TEXT)
+    except Exception:
+        log.exception("failed to log the apology for user %s", user.id)
 
 
 async def _log_inbound(conn, user: User, batch: list[dict], wa) -> tuple[list[dict], list[str]]:
@@ -73,9 +91,18 @@ async def _log_inbound(conn, user: User, batch: list[dict], wa) -> tuple[list[di
                 log.exception(
                     "failed to download image %s for user %s", message["image_id"], user.id
                 )
+                # The caption often carries the actual content — "offer at
+                # 580, wants to close by Nov" — and is the one thing of hers
+                # we still have on this path. Surface it alongside the
+                # failure note rather than discarding it along with the
+                # photo she can't easily resend from memory.
                 note = "[a photo in this message could not be downloaded]"
+                caption = message.get("caption")
+                if caption:
+                    blocks.append({"type": "text", "text": caption})
                 blocks.append({"type": "text", "text": note})
-                await messages_db.log(conn, user, "user", note, message["id"])
+                logged = f"{caption}\n{note}" if caption else note
+                await messages_db.log(conn, user, "user", logged, message["id"])
                 continue
             blocks.append({
                 "type": "image",
