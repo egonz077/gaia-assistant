@@ -53,13 +53,16 @@ async def save(
     return meeting_id
 
 
-async def set_visibility(conn, user: User, meeting_id: UUID, visibility: str) -> None:
-    """Reclassify. The trg_cascade_meeting_visibility trigger propagates to
+async def set_visibility(conn, user: User, meeting_id: UUID, visibility: str) -> bool:
+    """Reclassify. Returns True iff a row existed and was owned by user - the
+    caller must be told when nothing happened, not left to assume success.
+    The trg_cascade_meeting_visibility trigger propagates the change to
     memory_chunks and commitments."""
-    await conn.execute(
-        "UPDATE meetings SET visibility = %s WHERE id = %s AND user_id = %s",
+    cur = await conn.execute(
+        "UPDATE meetings SET visibility = %s WHERE id = %s AND user_id = %s RETURNING id",
         (visibility, meeting_id, user.id),
     )
+    return await cur.fetchone() is not None
 
 
 async def recent(conn, user: User, limit: int = 10) -> list[dict]:

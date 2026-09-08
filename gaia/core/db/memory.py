@@ -40,7 +40,7 @@ async def search(
         params["name"] = contact_name
 
     cur = await conn.execute(
-        f"""SELECT t.content, t.created_at, ct.name AS contact
+        f"""SELECT t.meeting_id, t.content, t.created_at, ct.name AS contact
             FROM memory_chunks t
             LEFT JOIN contacts ct ON ct.id = t.contact_id
             WHERE {visible('t')} {name_clause}
@@ -50,6 +50,9 @@ async def search(
     )
     return [
         {
+            # meeting_id is nullable in the schema (ON DELETE CASCADE clears
+            # it) - a chunk is not guaranteed to trace back to a meeting.
+            "meeting_id": str(r["meeting_id"]) if r["meeting_id"] else None,
             "content": r["content"],
             "date": r["created_at"].date().isoformat(),
             "contact": r["contact"],

@@ -20,6 +20,10 @@ async def save_meeting(conn, user: User, args: dict) -> dict:
         commitments=tuple(args.get("commitments", [])),
     )
 
+    # Only the first contact is linked to the memory chunk (memory_chunks has
+    # a single contact_id) - deliberate, not an oversight. A meeting with
+    # several contacts still gets one chunk; a richer many-to-many link would
+    # need its own join table.
     first_contact_id = None
     for entry in contacts:
         contact_id = await contacts_db.get_or_create(conn, user, entry["name"])
@@ -51,3 +55,14 @@ async def search_memory(conn, user: User, args: dict) -> dict:
 async def lookup_contact(conn, user: User, args: dict) -> dict:
     found = await contacts_db.lookup(conn, user, args["name"])
     return {"contact": found} if found else {"contact": None, "note": "no such contact"}
+
+
+async def set_meeting_visibility(conn, user: User, args: dict) -> dict:
+    """Reclassify an already-filed meeting. Uses the same private-boolean
+    vocabulary as save_meeting rather than the raw org/private enum, so the
+    model sees one consistent concept for visibility either way."""
+    visibility = "private" if args.get("private") else "org"
+    changed = await meetings_db.set_visibility(conn, user, args["meeting_id"], visibility)
+    if not changed:
+        return {"changed": False, "note": "no such meeting, or it belongs to someone else"}
+    return {"changed": True, "visibility": visibility}

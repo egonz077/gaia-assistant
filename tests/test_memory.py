@@ -101,6 +101,30 @@ async def test_index_meeting_stores_contact_id_and_search_returns_contact_name(c
 # --- embedding dimension vs. schema -----------------------------------------
 
 
+# --- meeting_id on search results -------------------------------------
+
+
+async def test_search_results_carry_the_source_meeting_id(conn, ana):
+    """Without an id, 'make the Tuesday showing private' is unanswerable -
+    search must let the model refer back to what it found."""
+    mid = await _meeting_with_chunk(conn, ana, "Showed a house on Elm")
+    hits = await memory_db.search(conn, ana, "Elm")
+    assert hits[0]["meeting_id"] == str(mid)
+
+
+async def test_search_handles_a_chunk_with_no_meeting_id(conn, ana):
+    """meeting_id is nullable in the schema (ON DELETE CASCADE clears it on
+    meeting deletion), so search must not assume every chunk has one."""
+    vector = [0.0] * EMBED_DIM
+    await conn.execute(
+        """INSERT INTO memory_chunks (user_id, visibility, content, embedding)
+           VALUES (%s, 'org', %s, %s)""",
+        (ana.id, "Orphaned chunk, no meeting", vector),
+    )
+    hits = await memory_db.search(conn, ana, "Orphaned")
+    assert hits[0]["meeting_id"] is None
+
+
 async def test_embedding_column_dimension_matches_embed_dim(conn):
     """fake_embed derives its vector width from EMBED_DIM, not a literal, so
     this pins EMBED_DIM itself against the live schema — closing the gap

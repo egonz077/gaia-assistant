@@ -50,12 +50,22 @@ async def test_flipping_a_meeting_to_private_cascades(conn, ana):
         source="text",
         commitments=[{"description": "Send comps"}],
     )
-    await meetings_db.set_visibility(conn, ana, mid, "private")
+    assert await meetings_db.set_visibility(conn, ana, mid, "private") is True
 
     cur = await conn.execute(
         "SELECT visibility FROM commitments WHERE meeting_id = %s", (mid,)
     )
     assert (await cur.fetchone())["visibility"] == "private"
+
+
+async def test_set_visibility_reports_false_when_nothing_matched(conn, ana, sofia):
+    """Wrong id, or someone else's meeting: the caller must be told nothing
+    happened rather than assuming success."""
+    mid = await meetings_db.save(conn, sofia, summary="Sofia's meeting", source="text")
+    assert await meetings_db.set_visibility(conn, ana, mid, "private") is False
+
+    cur = await conn.execute("SELECT visibility FROM meetings WHERE id = %s", (mid,))
+    assert (await cur.fetchone())["visibility"] == "org"
 
 
 async def test_open_commitments_are_scoped_by_ownership_not_visibility(conn, ana, sofia):

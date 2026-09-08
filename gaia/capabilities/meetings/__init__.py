@@ -1,5 +1,10 @@
 from gaia.capabilities.base import Capability, Tool
-from gaia.capabilities.meetings.tools import lookup_contact, save_meeting, search_memory
+from gaia.capabilities.meetings.tools import (
+    lookup_contact,
+    save_meeting,
+    search_memory,
+    set_meeting_visibility,
+)
 
 SAVE_SCHEMA = {
     "type": "object",
@@ -49,12 +54,28 @@ SAVE_SCHEMA = {
     "required": ["summary", "contacts"],
 }
 
+SET_VISIBILITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "meeting_id": {"type": "string"},
+        "private": {
+            "type": "boolean",
+            "description": "True to take this already-filed meeting off the company record; "
+                           "false to restore it to org-visible.",
+        },
+    },
+    "required": ["meeting_id", "private"],
+}
+
 CAPABILITY = Capability(
     name="meetings",
     description="Filing and recalling meeting notes",
     prompt_fragment=(
         "\nWhen she asks you to keep something off the company record, pass private: true "
         "to save_meeting. Otherwise colleagues at Gaia can see it, which is the default.\n"
+        "If she later decides an already-filed meeting should be made private - or put back "
+        "on the record - use set_meeting_visibility. This also hides (or restores) that "
+        "meeting's notes in company-wide search.\n"
     ),
     tools=(
         Tool("save_meeting",
@@ -73,5 +94,9 @@ CAPABILITY = Capability(
              "Fetch what is known about one person: profile, phone, email.",
              {"type": "object", "properties": {"name": {"type": "string"}}, "required": ["name"]},
              lookup_contact),
+        Tool("set_meeting_visibility",
+             "Reclassify an already-filed meeting as private or back to org-visible. Also "
+             "cascades to that meeting's commitments and its semantic-memory chunk.",
+             SET_VISIBILITY_SCHEMA, set_meeting_visibility),
     ),
 )
