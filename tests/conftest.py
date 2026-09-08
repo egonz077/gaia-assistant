@@ -69,3 +69,14 @@ async def ana(conn):
 @pytest_asyncio.fixture
 async def sofia(conn):
     return await users_db.create_user(conn, name="Sofia", wa_id="13055550002")
+
+
+@pytest.fixture(autouse=True)
+def fake_embed(monkeypatch):
+    """Deterministic embeddings. Tests assert on scoping, not on similarity —
+    real Voyage calls would make the suite slow, flaky and billable."""
+    async def _embed(texts, input_type="document"):
+        return [[float(len(t) % 7)] + [0.0] * 1023 for t in texts]
+
+    monkeypatch.setattr("gaia.core.embeddings.embed", _embed)
+    monkeypatch.setattr("gaia.core.db.memory.embed", _embed)
