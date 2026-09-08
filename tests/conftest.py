@@ -77,9 +77,15 @@ async def sofia(conn):
 @pytest.fixture(autouse=True)
 def fake_embed(monkeypatch):
     """Deterministic embeddings. Tests assert on scoping, not on similarity —
-    real Voyage calls would make the suite slow, flaky and billable."""
+    real Voyage calls would make the suite slow, flaky and billable.
+
+    Vectors are sized from EMBED_DIM rather than a literal so a change to the
+    real model's dimension shows up here too, instead of only at Postgres
+    insert time in production."""
+    from gaia.core.embeddings import EMBED_DIM
+
     async def _embed(texts, input_type="document"):
-        return [[float(len(t) % 7)] + [0.0] * 1023 for t in texts]
+        return [[float(len(t) % 7)] + [0.0] * (EMBED_DIM - 1) for t in texts]
 
     monkeypatch.setattr("gaia.core.embeddings.embed", _embed)
     monkeypatch.setattr("gaia.core.db.memory.embed", _embed)

@@ -4,7 +4,13 @@ import voyageai
 
 from gaia.core.config import settings
 
-MODEL = "voyage-3.5-lite"  # 1024 dims, matching vector(1024) in the schema
+MODEL = "voyage-3.5-lite"
+# Must match vector(N) in migrations/001_init.sql (memory_chunks.embedding).
+# A test pins this against the live schema, but that only catches drift
+# between this constant and the DB column — it cannot catch MODEL being
+# pointed at a Voyage model whose real output width differs, since verifying
+# that would require calling the real API.
+EMBED_DIM = 1024
 
 _client = voyageai.Client(api_key=settings.voyage_api_key)
 
