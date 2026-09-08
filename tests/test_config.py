@@ -10,8 +10,8 @@ def test_settings_read_from_environment(monkeypatch):
     monkeypatch.setenv("WA_VERIFY_TOKEN", "verify")
     monkeypatch.setenv("WA_PHONE_NUMBER_ID", "123")
 
-    s = Settings()
+    s = Settings(_env_file=None)
 
     assert s.database_url == "postgresql://u:p@localhost/db"
-    assert s.model == "claude-opus-5"       # default
+    assert s.model == "claude-opus-5"       # default, _env_file=None
     assert s.debounce_seconds == 3.0        # default
