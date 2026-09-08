@@ -13,7 +13,7 @@ FALLBACK_TEXT = "Sorry — I couldn't work that one out. Could you try rephrasin
 
 async def run_agent(
     client,
-    conn,
+    pool,
     user: User,
     messages: list[dict],
     system: str,
@@ -24,6 +24,13 @@ async def run_agent(
 
     Never returns an empty string: WhatsApp rejects an empty body, and a
     refusal or a max_tokens stop can legitimately produce no text block.
+
+    Takes the connection *pool* rather than a connection. This loop is the
+    slow part of a turn — up to MAX_ITERATIONS model calls, 10-30 seconds on
+    a photo — and holding one of a handful of pooled connections open, inside
+    a transaction, across all of that both starves the pool and forces every
+    tool in the turn to share one transaction, where a single failure aborts
+    the lot. Registry.dispatch opens its own short transaction per call.
 
     Does not mutate the caller's `messages` list. The loop works on a local
     copy — assistant turns and tool_result turns accumulated while iterating
@@ -63,7 +70,7 @@ async def run_agent(
         results = []
         for block in response.content:
             if block.type == "tool_use":
-                output = await reg.dispatch(conn, user, block.name, block.input)
+                output = await reg.dispatch(pool, user, block.name, block.input)
                 results.append(
                     {"type": "tool_result", "tool_use_id": block.id, "content": output}
                 )

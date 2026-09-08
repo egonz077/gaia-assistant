@@ -5,13 +5,13 @@ from gaia.core.llm import FALLBACK_TEXT, run_agent
 from tests.fakes import FakeAnthropic, FakeResponse, TextBlock, ToolUseBlock
 
 
-async def test_returns_text_when_the_model_stops(ana):
+async def test_returns_text_when_the_model_stops(ana, migrated):
     client = FakeAnthropic([FakeResponse([TextBlock("Got it — filed.")])])
-    out = await run_agent(client, None, ana, [{"role": "user", "content": "hi"}], "sys", [])
+    out = await run_agent(client, migrated, ana, [{"role": "user", "content": "hi"}], "sys", [])
     assert out == "Got it — filed."
 
 
-async def test_runs_a_tool_then_replies(ana):
+async def test_runs_a_tool_then_replies(ana, migrated):
     calls = []
 
     async def handler(conn, user, args):
@@ -28,25 +28,25 @@ async def test_runs_a_tool_then_replies(ana):
         FakeResponse([TextBlock("Filed.")]),
     ])
     out = await run_agent(
-        client, None, ana, [{"role": "user", "content": "notes"}], "sys", [], registry=reg
+        client, migrated, ana, [{"role": "user", "content": "notes"}], "sys", [], registry=reg
     )
     assert calls == [{"summary": "x"}]
     assert out == "Filed."
 
 
-async def test_empty_response_falls_back(ana):
+async def test_empty_response_falls_back(ana, migrated):
     client = FakeAnthropic([FakeResponse([])])
-    out = await run_agent(client, None, ana, [{"role": "user", "content": "hi"}], "sys", [])
+    out = await run_agent(client, migrated, ana, [{"role": "user", "content": "hi"}], "sys", [])
     assert out == FALLBACK_TEXT
 
 
-async def test_refusal_falls_back(ana):
+async def test_refusal_falls_back(ana, migrated):
     client = FakeAnthropic([FakeResponse([], stop_reason="refusal")])
-    out = await run_agent(client, None, ana, [{"role": "user", "content": "hi"}], "sys", [])
+    out = await run_agent(client, migrated, ana, [{"role": "user", "content": "hi"}], "sys", [])
     assert out == FALLBACK_TEXT
 
 
-async def test_iteration_cap_terminates(ana):
+async def test_iteration_cap_terminates(ana, migrated):
     async def handler(conn, user, args):
         return {"ok": True}
 
@@ -59,15 +59,15 @@ async def test_iteration_cap_terminates(ana):
          for i in range(20)]
     )
     out = await run_agent(
-        client, None, ana, [{"role": "user", "content": "go"}], "sys", [], registry=reg
+        client, migrated, ana, [{"role": "user", "content": "go"}], "sys", [], registry=reg
     )
     assert out == FALLBACK_TEXT
     assert len(client.requests) == 8   # MAX_ITERATIONS
 
 
-async def test_request_carries_the_configured_model_and_caching(ana):
+async def test_request_carries_the_configured_model_and_caching(ana, migrated):
     client = FakeAnthropic([FakeResponse([TextBlock("ok")])])
-    await run_agent(client, None, ana, [{"role": "user", "content": "hi"}], "sys", [])
+    await run_agent(client, migrated, ana, [{"role": "user", "content": "hi"}], "sys", [])
     req = client.requests[0]
     assert req["model"] == "claude-opus-5"
     assert req["max_tokens"] == 8000
@@ -75,7 +75,7 @@ async def test_request_carries_the_configured_model_and_caching(ana):
     assert req["system"][0]["cache_control"] == {"type": "ephemeral"}
 
 
-async def test_batches_multiple_tool_calls_into_one_message(ana):
+async def test_batches_multiple_tool_calls_into_one_message(ana, migrated):
     calls = []
 
     async def handler_a(conn, user, args):
@@ -111,7 +111,7 @@ async def test_batches_multiple_tool_calls_into_one_message(ana):
         ]
     )
     messages = [{"role": "user", "content": "go"}]
-    out = await run_agent(client, None, ana, messages, "sys", [], registry=reg)
+    out = await run_agent(client, migrated, ana, messages, "sys", [], registry=reg)
 
     assert calls == [("a", {"x": 1}), ("b", {"y": 2})]
     assert out == "Done."
@@ -133,21 +133,21 @@ async def test_batches_multiple_tool_calls_into_one_message(ana):
     assert json.loads(results_by_id["tu_b"]["content"])["which"] == "beta"
 
 
-async def test_whitespace_only_response_falls_back(ana):
+async def test_whitespace_only_response_falls_back(ana, migrated):
     client = FakeAnthropic([FakeResponse([TextBlock("   \n  ")])])
-    out = await run_agent(client, None, ana, [{"role": "user", "content": "hi"}], "sys", [])
+    out = await run_agent(client, migrated, ana, [{"role": "user", "content": "hi"}], "sys", [])
     assert out == FALLBACK_TEXT
 
 
-async def test_does_not_mutate_the_callers_messages_list(ana):
+async def test_does_not_mutate_the_callers_messages_list(ana, migrated):
     client = FakeAnthropic([FakeResponse([TextBlock("ok")])])
     messages = [{"role": "user", "content": "hi"}]
     before = list(messages)
-    await run_agent(client, None, ana, messages, "sys", [])
+    await run_agent(client, migrated, ana, messages, "sys", [])
     assert messages == before
 
 
-async def test_does_not_mutate_the_callers_messages_list_with_tool_use(ana):
+async def test_does_not_mutate_the_callers_messages_list_with_tool_use(ana, migrated):
     async def handler(conn, user, args):
         return {"ok": True}
 
@@ -163,5 +163,5 @@ async def test_does_not_mutate_the_callers_messages_list_with_tool_use(ana):
     )
     messages = [{"role": "user", "content": "notes"}]
     before = list(messages)
-    await run_agent(client, None, ana, messages, "sys", [], registry=reg)
+    await run_agent(client, migrated, ana, messages, "sys", [], registry=reg)
     assert messages == before

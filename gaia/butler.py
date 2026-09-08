@@ -4,7 +4,7 @@ from gaia.capabilities.base import registry
 from gaia.core.db import contacts as contacts_db
 from gaia.core.db import messages as messages_db
 from gaia.core.db import users as users_db
-from gaia.core.db.pool import tx
+from gaia.core.db.pool import get_pool, tx
 from gaia.core.llm import run_agent
 from gaia.core.models import User
 
@@ -120,11 +120,12 @@ async def _log_inbound(conn, user: User, batch: list[dict], wa) -> tuple[list[di
 async def handle_turn(user: User, batch: list[dict], wa) -> None:
     """One agent turn for one user, over a whole debounced burst.
 
-    Opens its own transactions — two of them — rather than taking a
-    connection from the caller: the turn queue serialises per user but does
-    not own a database connection, and this function's own sends to WhatsApp
-    happen outside any transaction so a slow Graph API call never holds a
-    pooled connection.
+    Opens its own short transactions rather than taking a connection from the
+    caller: the turn queue serialises per user but does not own a database
+    connection. No transaction is held across network I/O — not the Graph API
+    sends, and not the agent loop, which is 10-30 seconds of Anthropic calls
+    on a photo. The loop is handed the pool instead, and each tool call opens
+    and commits its own transaction (see Registry.dispatch).
 
     The inbound log is committed *before* the agent loop runs, deliberately
     splitting what was one transaction in the original plan. The agent loop
@@ -136,7 +137,8 @@ async def handle_turn(user: User, batch: list[dict], wa) -> None:
     she ever wrote in — silence, with no way for her to know it did not save.
     Committing the inbound log first means a failure downstream degrades to
     "no reply yet, and I got an apology", not "it vanished and I have no
-    idea".
+    idea". The same argument applies within the loop: work a tool has already
+    done is committed, so a failure two tool calls later cannot erase it.
 
     Any unhandled failure here — a bad download, the model call, a database
     error while running the loop — is caught and turned into a short WhatsApp
@@ -160,18 +162,32 @@ async def handle_turn(user: User, batch: list[dict], wa) -> None:
         # turn workload identity federation into a code change later instead
         # of a config-only one.
         client = AsyncAnthropic()
-        async with tx() as conn:
+        pool = get_pool()
+
+        # Everything the model needs is read up front and the connection is
+        # given back before the first API call.
+        async with tx(pool) as conn:
             history = await messages_db.recent(conn, user, exclude_wa_ids=tuple(wa_ids))
             messages = [{"role": m["role"], "content": m["content"]} for m in history]
             messages.append({"role": "user", "content": blocks})
-
             system = await build_system_prompt(conn, user)
-            tool_defs = registry.tool_defs(user)
 
-            reply = await run_agent(client, conn, user, messages, system, tool_defs)
-            await messages_db.log(conn, user, "assistant", reply)
+        tool_defs = registry.tool_defs(user)
+        reply = await run_agent(client, pool, user, messages, system, tool_defs)
 
         await wa.send_text(user.wa_id, reply)
     except Exception:
         log.exception("turn failed after logging inbound messages for user %s", user.id)
         await _apologize(wa, user)
+        return
+
+    # Logged only once the send has actually happened, the same way
+    # _apologize does it: a reply sitting in her history that she never
+    # received tells both her and the model something untrue. Recording it is
+    # strictly secondary to delivering it, so a failure here degrades quietly
+    # rather than turning a delivered reply into an apology.
+    try:
+        async with tx(pool) as conn:
+            await messages_db.log(conn, user, "assistant", reply)
+    except Exception:
+        log.exception("failed to log the reply for user %s", user.id)

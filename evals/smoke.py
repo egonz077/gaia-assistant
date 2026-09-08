@@ -100,11 +100,10 @@ async def main() -> int:
         print(f"\n### {label}\n>>> {text}\n")
         messages = [{"role": "user", "content": [{"type": "text", "text": text}]}]
         try:
-            async with tx(pool) as conn:
-                reply = await llm.run_agent(
-                    client, conn, user, messages,
-                    BASE_PROMPT.format(name=user.name), tool_defs,
-                )
+            reply = await llm.run_agent(
+                client, pool, user, messages,
+                BASE_PROMPT.format(name=user.name), tool_defs,
+            )
             marker = "  (FALLBACK — model produced nothing usable)" if reply == llm.FALLBACK_TEXT else ""
             print(f"<<< {reply}{marker}")
             if reply == llm.FALLBACK_TEXT:

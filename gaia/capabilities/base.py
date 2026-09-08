@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
+from gaia.core.db.pool import tx
 from gaia.core.models import User
 
 log = logging.getLogger("gaia.registry")
@@ -64,9 +65,25 @@ class Registry:
     def prompt_fragments(self, user: User) -> str:
         return "".join(c.prompt_fragment for c in self.for_user(user))
 
-    async def dispatch(self, conn, user: User, name: str, args: dict) -> str:
+    async def dispatch(self, pool, user: User, name: str, args: dict) -> str:
         """Re-checks visibility. Filtering the tool list is presentation; this
-        is enforcement - a hallucinated tool name must not execute."""
+        is enforcement - a hallucinated tool name must not execute.
+
+        Takes the connection *pool*, not a connection, and gives each handler
+        its own transaction. Catching a handler's exception is only recovery
+        if the connection is still usable afterwards, and for a database error
+        it is not: psycopg leaves the connection INERROR, so every later
+        statement on it raises InFailedSqlTransaction. With one transaction
+        spanning the whole turn that meant a single bad tool call — a
+        hallucinated uuid, an unparseable date — silently aborted the log of
+        the assistant's reply too, and the rollback took with it the meeting
+        the previous tool call had just saved. The user photographed her
+        notes, was told something went wrong, and the notes were gone.
+
+        Per-call transactions also mean a tool's successful writes are already
+        committed if the turn fails later, and that no pooled connection is
+        held across the model's own network round-trips.
+        """
         for capability in self._capabilities:
             for tool in capability.tools:
                 if tool.name != name:
@@ -75,7 +92,9 @@ class Registry:
                     log.warning("user %s attempted hidden tool %s", user.id, name)
                     return f"tool {name} is not available"
                 try:
-                    return json.dumps(await tool.handler(conn, user, args), default=str)
+                    async with tx(pool) as conn:
+                        result = await tool.handler(conn, user, args)
+                    return json.dumps(result, default=str)
                 except Exception:
                     # Full detail (which may include SQL fragments, column
                     # names, etc.) stays server-side. The model only gets a
