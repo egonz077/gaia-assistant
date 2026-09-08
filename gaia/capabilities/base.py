@@ -76,9 +76,16 @@ class Registry:
                     return f"tool {name} is not available"
                 try:
                     return json.dumps(await tool.handler(conn, user, args), default=str)
-                except Exception as exc:  # surfaced to the model, not the user
+                except Exception:
+                    # Full detail (which may include SQL fragments, column
+                    # names, etc.) stays server-side. The model only gets a
+                    # generic signal it can act on, distinct from "unknown
+                    # tool" and "not available" so it can respond sensibly.
                     log.exception("tool %s failed", name)
-                    return f"tool error: {exc}"
+                    return (
+                        f"tool {name} failed. Tell the user you could not "
+                        "complete this and suggest trying again."
+                    )
         return f"unknown tool {name}"
 
 
