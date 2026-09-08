@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Sequence
 
 from gaia.capabilities.base import registry as default_registry
 from gaia.core.config import settings
@@ -11,12 +12,31 @@ MAX_TOKENS = 8000
 FALLBACK_TEXT = "Sorry — I couldn't work that one out. Could you try rephrasing?"
 
 
+def _system_blocks(system: str | Sequence[str]) -> list[dict]:
+    """Stable prefix first and marked as the cache breakpoint; volatile
+    content after it, unmarked.
+
+    Spec §5.3: caching covers the tools plus the base system prefix, which is
+    stable per user, and content that changes often goes after the
+    breakpoint. Marking the whole prompt instead put the contact roster —
+    ordered by updated_at, so reordered by essentially every save_meeting —
+    inside the cached prefix. Every reorder was then a full miss on the
+    system prompt *and* the tool definitions, rewritten at 1.25x, which on a
+    workload where most turns file a meeting costs more than not caching.
+    """
+    parts = [system] if isinstance(system, str) else [p for p in system if p]
+    return [
+        {"type": "text", "text": parts[0], "cache_control": {"type": "ephemeral"}},
+        *({"type": "text", "text": p} for p in parts[1:]),
+    ]
+
+
 async def run_agent(
     client,
     pool,
     user: User,
     messages: list[dict],
-    system: str,
+    system: str | Sequence[str],
     tool_defs: list[dict],
     registry=None,
 ) -> str:
@@ -39,8 +59,7 @@ async def run_agent(
     """
     reg = registry or default_registry
     messages = list(messages)
-    # The system prompt is stable per user, so it is the cache breakpoint.
-    system_blocks = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+    system_blocks = _system_blocks(system)
 
     for _ in range(MAX_ITERATIONS):
         response = await client.messages.create(

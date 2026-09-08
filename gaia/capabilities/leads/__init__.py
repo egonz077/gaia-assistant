@@ -12,9 +12,9 @@ CAPABILITY = Capability(
     name="leads",
     description="Tracking deals and follow-ups",
     prompt_fragment=(
-        "\nWhen she mentions someone who might transact, create a lead with a next action "
-        "date so it reaches her morning digest. A lead without a next_action_at will never "
-        "be followed up.\n"
+        "\nWhen the user mentions someone who might transact, create a lead with a next "
+        "action date so it reaches their morning digest. A lead without a next_action_at "
+        "will never be followed up.\n"
     ),
     tools=(
         Tool("create_lead",

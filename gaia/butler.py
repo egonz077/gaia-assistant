@@ -12,37 +12,54 @@ log = logging.getLogger("gaia.butler")
 
 APOLOGY_TEXT = "Sorry, something went wrong on my end and I couldn't finish that. Could you send it again?"
 
+# Gaia has many agents, of any gender. The prototype this grew from served one
+# person and said "she" throughout; a product that is handed the user's real
+# name and then tells the model, eight times, what pronouns to use will
+# misgender people in the first sentence of its reply. Use {name}, or "they".
 BASE_PROMPT = """You are the assistant for {name}, an agent at the Gaia real-estate company, \
 reachable over WhatsApp.
 
-When she sends meeting notes — typed or photographed handwriting — transcribe if needed, then \
+When {name} sends meeting notes — typed or photographed handwriting — transcribe if needed, then \
 extract a short summary, the people involved, commitments made, and any follow-up dates. Save \
-them with your tools. Echo back what you understood and ask her to confirm anything ambiguous: \
+them with your tools. Echo back what you understood and ask {name} to confirm anything ambiguous: \
 names, numbers, dates.
 
 Answer questions about past meetings, leads and contacts using your tools. Never contact third \
 parties.
 
 Style: brief and warm, like a text message. No markdown headers or bullet lists.
+"""
 
-Today is {today} in her timezone ({tz}).
-People she has worked with recently: {roster}
+# Everything that changes turn to turn lives here, after the cache breakpoint.
+CONTEXT_PROMPT = """Today is {today} in {name}'s timezone ({tz}).
+People {name} has worked with recently: {roster}
 Use lookup_contact for details on any of them.
 """
 
 
-async def build_system_prompt(conn, user: User) -> str:
+async def build_system_prompt(conn, user: User) -> list[str]:
+    """The system prompt in two parts: stable first, volatile second.
+
+    The caller marks only the first as the cache breakpoint (see
+    core/llm.py). BASE_PROMPT and the capability fragments are stable per
+    user; today's date and the roster are not — the roster reorders on
+    essentially every save_meeting, and with it inside the cached prefix
+    every reorder was a full miss on the system prompt *and* the tool
+    definitions, rewritten at 1.25x. Spec §5.3 asked for exactly this split.
+    """
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
     names = await contacts_db.roster(conn, user)
     today = datetime.now(ZoneInfo(user.timezone)).date().isoformat()
-    return BASE_PROMPT.format(
+    stable = BASE_PROMPT.format(name=user.name) + registry.prompt_fragments(user)
+    volatile = CONTEXT_PROMPT.format(
         name=user.name,
         today=today,
         tz=user.timezone,
         roster=", ".join(names) or "(nobody yet)",
-    ) + registry.prompt_fragments(user)
+    )
+    return [stable, volatile]
 
 
 async def _apologize(wa, user: User) -> None:

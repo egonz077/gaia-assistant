@@ -177,3 +177,66 @@ async def test_apology_logging_failure_does_not_raise(wa_user, monkeypatch):
     await handle_turn(wa_user, batch, wa)
 
     assert wa.sent == [(wa_user.wa_id, APOLOGY_TEXT)]
+
+
+class TestSystemPrompt:
+    """The assembled prompt, read as the user would read it.
+
+    Spec §9.2 asks that the request carry a roster rather than full profiles;
+    §5.3 asks for the cache breakpoint after the stable prefix. Both are
+    properties of what build_system_prompt returns, and neither had a test.
+    """
+
+    async def test_stable_first_volatile_second(self, conn, ana):
+        from gaia.butler import build_system_prompt
+
+        stable, volatile = await build_system_prompt(conn, ana)
+
+        assert "You are the assistant for Ana" in stable
+        assert "Today is" not in stable
+        assert "worked with recently" not in stable
+        assert "Today is" in volatile
+        assert ana.timezone in volatile
+
+    async def test_carries_a_roster_of_names_not_profiles(self, conn, ana):
+        from gaia.butler import build_system_prompt
+        from gaia.core.db import contacts as contacts_db
+        from gaia.core.db import meetings as meetings_db
+
+        await meetings_db.save(
+            conn, ana, summary="Showing", source="text", contact_names=("Maria Delgado",)
+        )
+        cid = await contacts_db.get_or_create(conn, ana, "Maria Delgado")
+        await contacts_db.merge_profile(conn, ana, cid, "budget tops out at 600k")
+
+        _, volatile = await build_system_prompt(conn, ana)
+
+        assert "Maria Delgado" in volatile
+        assert "600k" not in volatile
+
+    async def test_says_nothing_about_the_users_gender(self, conn, ana):
+        """Gaia's agents are of any gender and the model is handed the real
+        name. A prompt that also insists on "she" misgenders people in the
+        first sentence of the reply."""
+        from gaia.butler import build_system_prompt
+
+        assembled = " ".join(await build_system_prompt(conn, ana)).lower()
+        for word in (" she ", " her ", " hers ", " herself "):
+            assert word not in assembled, f"prompt still says{word.rstrip()}"
+
+    async def test_the_roster_line_is_true(self, conn, ana, sofia):
+        """The line claims these are people the user has worked with. It is
+        the one place the ownership-vs-visibility rule is stated in prose
+        rather than SQL, and it was stated backwards."""
+        from gaia.butler import build_system_prompt
+        from gaia.core.db import meetings as meetings_db
+
+        await meetings_db.save(
+            conn, sofia, summary="Sofia's appointment", source="text",
+            contact_names=("Rivera",),
+        )
+
+        _, volatile = await build_system_prompt(conn, ana)
+
+        assert "Rivera" not in volatile
+        assert "(nobody yet)" in volatile

@@ -26,13 +26,37 @@ async def get_or_create(conn, user: User, name: str) -> UUID:
 
 
 async def roster(conn, user: User, limit: int = 40) -> list[str]:
-    """Names only. Full profiles are fetched on demand via lookup(), so the
-    request does not grow with the company's whole contact book."""
+    """Names of people *this user* has actually worked with, most recently
+    touched first.
+
+    Names only. Full profiles are fetched on demand via lookup(), so the
+    request does not grow with the company's whole contact book.
+
+    Scoped by ownership as well as visibility, which is unusual for a read and
+    is the point. The system prompt states this list in words — "people {name}
+    has worked with recently" — and a purely visibility-scoped query returned
+    the *company's* 40 most recently touched contacts. Ana's prompt then
+    asserted, as fact, that she had recently worked with Sofia's clients, and
+    the model acted on it: "how did it go with Rivera?" about someone she has
+    never met, in a brokerage where agents guard their books. A false premise
+    in a system prompt makes everything downstream of it confidently wrong.
+
+    A contact is reachable from a user's own work in exactly two ways —
+    through a meeting (meeting_contacts) or through a lead. Commitments are
+    only ever created by meetings.save alongside the meeting they came from,
+    so they are covered transitively. `visible()` still applies: ownership
+    narrows this list, it never widens it.
+    """
     cur = await conn.execute(
         f"""SELECT t.name FROM contacts t
             WHERE {visible('t')}
+              AND (EXISTS (SELECT 1 FROM meeting_contacts mc
+                             JOIN meetings m ON m.id = mc.meeting_id
+                            WHERE mc.contact_id = t.id AND m.user_id = %(uid)s)
+                OR EXISTS (SELECT 1 FROM leads l
+                            WHERE l.contact_id = t.id AND l.user_id = %(uid)s))
             ORDER BY t.updated_at DESC LIMIT %(limit)s""",
-        {"scope_user_id": user.id, "limit": limit},
+        {"scope_user_id": user.id, "uid": user.id, "limit": limit},
     )
     return [r["name"] for r in await cur.fetchall()]
 

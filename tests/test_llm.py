@@ -75,6 +75,26 @@ async def test_request_carries_the_configured_model_and_caching(ana, migrated):
     assert req["system"][0]["cache_control"] == {"type": "ephemeral"}
 
 
+async def test_only_the_stable_prefix_is_cached(ana, migrated):
+    """Spec §5.3: the breakpoint goes after the stable prefix, not after
+    everything. With volatile content inside the cached block, the roster
+    reordering on a save_meeting invalidates the system prompt and every tool
+    definition with it — cache writes bill at 1.25x, so caching then costs
+    more than not caching."""
+    client = FakeAnthropic([FakeResponse([TextBlock("ok")])])
+    await run_agent(
+        client, migrated, ana, [{"role": "user", "content": "hi"}],
+        ["stable base prompt", "Today is 2026-09-08. Roster: Delgado, Rivera"], [],
+    )
+    system = client.requests[0]["system"]
+
+    assert len(system) == 2
+    assert system[0]["text"] == "stable base prompt"
+    assert system[0]["cache_control"] == {"type": "ephemeral"}
+    assert "Roster" not in system[0]["text"]
+    assert "cache_control" not in system[1]
+
+
 async def test_batches_multiple_tool_calls_into_one_message(ana, migrated):
     calls = []
 

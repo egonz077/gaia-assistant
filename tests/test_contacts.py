@@ -16,10 +16,39 @@ async def test_get_or_create_does_not_reuse_another_users_private_contact(conn, 
 
 
 async def test_roster_returns_names_not_profiles(conn, ana):
+    from gaia.core.db import meetings as meetings_db
+
+    await meetings_db.save(
+        conn, ana, summary="Showing", source="text", contact_names=("Maria Delgado",)
+    )
     cid = await contacts_db.get_or_create(conn, ana, "Maria Delgado")
     await contacts_db.merge_profile(conn, ana, cid, "wants a pool")
     names = await contacts_db.roster(conn, ana)
     assert names == ["Maria Delgado"]
+
+
+async def test_roster_is_the_users_own_contacts_not_the_companys(conn, ana, sofia):
+    """The system prompt states this list in words — "people {name} has worked
+    with recently". Visibility-scoping alone returned the whole company's
+    recently-touched contacts, so Ana's prompt asserted as fact that she had
+    worked with Sofia's clients and the model asked her how it went."""
+    from gaia.core.db import leads as leads_db
+    from gaia.core.db import meetings as meetings_db
+
+    await meetings_db.save(
+        conn, sofia, summary="Sofia's listing appointment", source="text",
+        contact_names=("Rivera",),
+    )
+    await meetings_db.save(
+        conn, ana, summary="Ana's showing", source="text", contact_names=("Delgado",),
+    )
+    await leads_db.create(conn, ana, contact_name="Marco", description="Buying")
+
+    # Rivera is org-visible and Ana could look him up — he is simply not
+    # someone she has worked with.
+    assert await contacts_db.lookup(conn, ana, "Rivera") is not None
+    assert sorted(await contacts_db.roster(conn, ana)) == ["Delgado", "Marco"]
+    assert await contacts_db.roster(conn, sofia) == ["Rivera"]
 
 
 async def test_lookup_returns_the_profile(conn, ana):
