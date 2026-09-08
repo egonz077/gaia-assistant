@@ -38,10 +38,18 @@ the deploy done.
 
 ## Meta
 
+Do 1, 2 and 4 now — none of them need the app running, and both the token
+and the template have approval lead times outside your control. **Step 3
+needs a live app and comes after "First run" below** — do not attempt it
+yet.
+
 1. A phone number not already on personal WhatsApp.
 2. A permanent access token via Business Settings → System Users.
-3. Webhook `https://$DOMAIN/webhook`, verify token matching `WA_VERIFY_TOKEN`,
-   subscribed to `messages`.
+3. *(after "First run")* Webhook `https://$DOMAIN/webhook`, verify token
+   matching `WA_VERIFY_TOKEN`, subscribed to `messages`. Meta calls this URL
+   with a challenge to confirm it before accepting the subscription, so
+   Caddy and the app must already be up and answering — see the "Return to
+   Meta" note at the end of First run.
 4. **A `daily_digest` utility template, one body parameter.** This is a
    prerequisite, not a nice-to-have: WhatsApp only allows free-form
    (non-template) sends within 24 hours of the user's last inbound message —
@@ -64,6 +72,10 @@ docker compose up -d --build
 docker compose exec app python -m gaia.core.admin \
     add-user --name "<name>" --phone <number> --role admin
 ```
+
+**Return to Meta, step 3.** The app and Caddy are up now, so go back and
+finish the webhook configuration — point it at `https://$DOMAIN/webhook`
+and confirm Meta's verification handshake succeeds before moving on.
 
 ## Before going live: prove the restore
 
@@ -100,6 +112,15 @@ Nightly `pg_dump -Fc` to DigitalOcean Spaces, 30-day retention, run by the
 DigitalOcean's own droplet backups run weekly — losing up to six days of
 meeting notes and client conversations is not an acceptable worst case for
 this data, so the nightly job exists independently of that.
+
+**Expect a dump at 03:00 America/New_York, every night**, not "24 hours
+after the container last started." The service computes seconds until the
+next wall-clock 03:00 and sleeps to it, recomputing fresh each time through
+the loop — a restart at 3pm does not shift the schedule to 3pm, and a slow
+backup one night does not push the next one later. If a night's backup
+fails, `backup failed` is logged and the loop continues to the next 03:00
+rather than dying; check `docker compose logs backup` if you suspect a
+night was missed.
 
 Requires in `.env`: `SPACES_BUCKET`, `SPACES_ENDPOINT`, `AWS_ACCESS_KEY_ID`,
 `AWS_SECRET_ACCESS_KEY` (a Spaces access key pair from the DO control panel —

@@ -51,14 +51,28 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      PGPASSWORD: ${DB_PASSWORD}
+      PGPASSWORD: ${DB_PASSWORD:-devpassword}
       TZ: America/New_York
     volumes:
       - ./deploy:/deploy:ro
     entrypoint: ["/bin/sh", "-c"]
+    # Anchored to 03:00 America/New_York (TZ above), not "86400s after the
+    # container started" — a restart at 3pm must not shift backups to 3pm,
+    # and a container that never stays up 24h must not skip backups forever.
+    # `now` is recomputed every iteration (after the previous backup.sh has
+    # already finished), so a multi-minute backup cannot drift the schedule
+    # or double-fire: whatever time it is when we loop back, we always sleep
+    # to the next 03:00 from there. A failed backup.sh is logged and the
+    # loop continues to the next night rather than dying.
     command: >
       "apk add --no-cache aws-cli >/dev/null &&
-       while true; do sleep 86400; /deploy/backup.sh || echo 'backup failed'; done"
+       while true; do
+         now=$(date +%s);
+         next=$(date -d '03:00' +%s);
+         if [ $$next -le $$now ]; then next=$((next + 86400)); fi;
+         sleep $((next - now));
+         /deploy/backup.sh || echo 'backup failed';
+       done"
     depends_on:
       db:
         condition: service_healthy
