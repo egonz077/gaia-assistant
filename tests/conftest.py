@@ -28,20 +28,35 @@ ADMIN_DSN = os.environ.get(
 
 @pytest.fixture(scope="session")
 def pg_admin_dsn():
-    """DSN of a database we can connect to in order to create/drop the test one."""
-    return ADMIN_DSN
+    """DSN of a database we can connect to in order to create/drop the test one.
+
+    Drops this process's test database on the way out so repeated runs do not
+    leave one behind per PID.
+    """
+    yield ADMIN_DSN
+    try:
+        with psycopg.connect(ADMIN_DSN, autocommit=True) as c:
+            c.execute(f'DROP DATABASE IF EXISTS "{TEST_DB}" WITH (FORCE)')
+    except Exception:  # teardown must never fail a green run
+        pass
+
+
+# Per-process database name. Two pytest runs in parallel (concurrent agents,
+# pytest-xdist) would otherwise DROP each other's database mid-test and produce
+# failures that look like real bugs.
+TEST_DB = f"gaia_test_{os.getpid()}"
 
 
 @pytest_asyncio.fixture
 async def pool(pg_admin_dsn):
-    """A pool against a freshly dropped-and-recreated gaia_test database."""
-    target = pg_admin_dsn.rsplit("/", 1)[0] + "/gaia_test"
+    """A pool against a freshly dropped-and-recreated test database."""
+    target = pg_admin_dsn.rsplit("/", 1)[0] + f"/{TEST_DB}"
 
     async with await psycopg.AsyncConnection.connect(
         pg_admin_dsn, autocommit=True
     ) as c:
-        await c.execute("DROP DATABASE IF EXISTS gaia_test WITH (FORCE)")
-        await c.execute("CREATE DATABASE gaia_test")
+        await c.execute(f'DROP DATABASE IF EXISTS "{TEST_DB}" WITH (FORCE)')
+        await c.execute(f'CREATE DATABASE "{TEST_DB}"')
 
     p = AsyncConnectionPool(target, min_size=1, max_size=4, open=False)
     await p.open(wait=True)
