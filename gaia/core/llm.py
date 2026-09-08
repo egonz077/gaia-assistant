@@ -24,8 +24,14 @@ async def run_agent(
 
     Never returns an empty string: WhatsApp rejects an empty body, and a
     refusal or a max_tokens stop can legitimately produce no text block.
+
+    Does not mutate the caller's `messages` list. The loop works on a local
+    copy — assistant turns and tool_result turns accumulated while iterating
+    are not written back, so the caller must not rely on this function to
+    return or persist conversation state.
     """
     reg = registry or default_registry
+    messages = list(messages)
     # The system prompt is stable per user, so it is the cache breakpoint.
     system_blocks = [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
@@ -50,6 +56,10 @@ async def run_agent(
             return text or FALLBACK_TEXT
 
         messages.append({"role": "assistant", "content": response.content})
+        # All tool_use blocks from one assistant turn must come back as a
+        # single user message with multiple tool_result blocks — splitting
+        # them across messages violates the API contract and silently trains
+        # the model to stop making parallel tool calls.
         results = []
         for block in response.content:
             if block.type == "tool_use":
