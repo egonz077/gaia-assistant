@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import logging
+import re
 
 import httpx
 
@@ -12,6 +13,9 @@ log = logging.getLogger("gaia.whatsapp")
 GRAPH = "https://graph.facebook.com/v21.0"
 MAX_BODY = 4000  # WhatsApp caps at 4096
 DIGEST_TEMPLATE = "daily_digest"
+# Meta's own limit on a template parameter is 1024; leave room for the
+# continuation marker and stop well short of a hard truncation.
+TEMPLATE_PARAM_MAX = 900
 
 
 def verify_signature(body: bytes, header: str) -> bool:
@@ -41,12 +45,43 @@ def parse_messages(payload: dict) -> list[dict]:
     return out
 
 
+def flatten_for_template(body: str, limit: int = TEMPLATE_PARAM_MAX) -> str:
+    """Make a multi-line digest legal as a WhatsApp template parameter.
+
+    The Cloud API rejects a template body parameter containing newlines, tabs
+    or four-plus consecutive spaces (error 132000, "parameter format does not
+    match"). The digest prompt asks the model to group the day's follow-ups by
+    person, which produces exactly that. The template path is the one taken
+    when an agent has not texted in 24 hours — including every newly-onboarded
+    agent's very first digest — so without this the highest-stakes send is the
+    one most likely to be rejected outright.
+
+    Truncation is marked rather than silent: a digest that stops mid-sentence
+    reads like a bug, and she has no way to ask for the rest of something she
+    cannot tell was cut.
+    """
+    flat = " · ".join(line.strip() for line in body.splitlines() if line.strip())
+    flat = re.sub(r"\s+", " ", flat).strip()
+    if len(flat) > limit:
+        flat = flat[:limit].rsplit(" ", 1)[0] + "… (reply here for the rest)"
+    return flat
+
+
 class WhatsAppClient:
     def __init__(self, token: str | None = None, phone_number_id: str | None = None):
         self._headers = {"Authorization": f"Bearer {token or settings.wa_access_token}"}
         self._phone_number_id = phone_number_id or settings.wa_phone_number_id
 
-    async def _post(self, payload: dict) -> None:
+    async def _post(self, payload: dict) -> bool:
+        """Returns whether Meta accepted the message.
+
+        The prototype ignored the status entirely, so 24h-window rejections
+        were silent. Logging it was only half the fix: returning None made
+        every caller's success path unconditional, and a log line nobody reads
+        is the same silence one layer up. The digest marked leads nudged,
+        wrote itself into her thread as though she had read it, and set
+        last_digest_on so it would not retry — for a message she never got.
+        """
         async with httpx.AsyncClient(timeout=20) as client:
             response = await client.post(
                 f"{GRAPH}/{self._phone_number_id}/messages",
@@ -54,30 +89,39 @@ class WhatsAppClient:
                 json=payload,
             )
         if response.status_code >= 400:
-            # The prototype ignored this, so 24h-window rejections were silent.
             log.error("whatsapp send failed %s: %s", response.status_code, response.text)
+            return False
+        return True
 
-    async def send_text(self, to: str, body: str) -> None:
+    async def send_text(self, to: str, body: str) -> bool:
         for i in range(0, len(body) or 1, MAX_BODY):
-            await self._post({
+            if not await self._post({
                 "messaging_product": "whatsapp",
                 "to": to,
                 "type": "text",
                 "text": {"body": body[i:i + MAX_BODY] or " "},
-            })
+            }):
+                # A later chunk after a rejected one is pointless: the usual
+                # cause (a closed service window, a dead token) applies to all
+                # of them.
+                return False
+        return True
 
-    async def send_template(self, to: str, body: str) -> None:
+    async def send_template(self, to: str, body: str) -> bool:
         """Used outside the 24-hour customer service window, where free-form
         messages are rejected."""
-        await self._post({
+        return await self._post({
             "messaging_product": "whatsapp",
             "to": to,
             "type": "template",
             "template": {
                 "name": DIGEST_TEMPLATE,
+                # Must match the language the template was approved under,
+                # exactly — register it as `en`, not `en_US`.
                 "language": {"code": "en"},
                 "components": [
-                    {"type": "body", "parameters": [{"type": "text", "text": body[:1000]}]}
+                    {"type": "body",
+                     "parameters": [{"type": "text", "text": flatten_for_template(body)}]}
                 ],
             },
         })

@@ -77,7 +77,9 @@ async def _apologize(wa, user: User) -> None:
     quietly rather than raising a second failure on top of the first.
     """
     try:
-        await wa.send_text(user.wa_id, APOLOGY_TEXT)
+        if not await wa.send_text(user.wa_id, APOLOGY_TEXT):
+            log.error("whatsapp rejected the apology to user %s", user.id)
+            return
     except Exception:
         log.exception("failed to send the apology to user %s", user.id)
         return
@@ -192,10 +194,16 @@ async def handle_turn(user: User, batch: list[dict], wa) -> None:
         tool_defs = registry.tool_defs(user)
         reply = await run_agent(client, pool, user, messages, system, tool_defs)
 
-        await wa.send_text(user.wa_id, reply)
+        delivered = await wa.send_text(user.wa_id, reply)
     except Exception:
         log.exception("turn failed after logging inbound messages for user %s", user.id)
         await _apologize(wa, user)
+        return
+
+    if not delivered:
+        # Rejected, not raised — a closed service window or a dead token. The
+        # reply is not history if it never arrived.
+        log.error("whatsapp rejected the reply to user %s", user.id)
         return
 
     # Logged only once the send has actually happened, the same way

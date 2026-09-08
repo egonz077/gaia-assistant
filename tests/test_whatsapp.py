@@ -161,3 +161,62 @@ async def test_send_template_sends_correct_payload_shape(monkeypatch):
     [parameter] = component["parameters"]
     assert parameter["type"] == "text"
     assert parameter["text"] == "Good morning! You have 3 new leads."
+
+
+def test_flatten_makes_a_grouped_digest_legal_as_a_template_parameter():
+    """Meta rejects a template body parameter containing newlines, tabs or
+    4+ consecutive spaces (error 132000). The digest prompt asks the model to
+    group follow-ups by person, which produces all three."""
+    digest = (
+        "Morning!\n\n"
+        "Maria Delgado:\n"
+        "\tsend comps    (still open from Tuesday)\n"
+        "Rivera:\n"
+        "  confirm the Thursday walkthrough\n"
+    )
+
+    flat = whatsapp.flatten_for_template(digest)
+
+    assert "\n" not in flat
+    assert "\t" not in flat
+    assert "    " not in flat
+    assert "Maria Delgado" in flat and "Rivera" in flat
+
+
+def test_flatten_marks_a_truncation_instead_of_cutting_mid_sentence():
+    flat = whatsapp.flatten_for_template("word " * 500)
+    assert len(flat) <= whatsapp.TEMPLATE_PARAM_MAX + len("… (reply here for the rest)")
+    assert flat.endswith("… (reply here for the rest)")
+
+
+@pytest.mark.asyncio
+async def test_send_template_flattens_the_body_it_sends(monkeypatch):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"messages": [{"id": "wamid.out"}]})
+
+    _stub_async_client(monkeypatch, handler)
+    client = whatsapp.WhatsAppClient(token="tok", phone_number_id="123")
+
+    assert await client.send_template("13055550001", "Morning!\nMaria: send comps") is True
+
+    body = json.loads(calls[0].read())
+    [parameter] = body["template"]["components"][0]["parameters"]
+    assert "\n" not in parameter["text"]
+    assert "Maria" in parameter["text"]
+
+
+@pytest.mark.asyncio
+async def test_sends_report_whether_meta_accepted_them(monkeypatch):
+    """Returning None made every caller's success path unconditional — the
+    digest recorded an undelivered message as sent."""
+    def rejects(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"message": "outside 24h window"}})
+
+    _stub_async_client(monkeypatch, rejects)
+    client = whatsapp.WhatsAppClient(token="tok", phone_number_id="123")
+
+    assert await client.send_text("13055550001", "hello") is False
+    assert await client.send_template("13055550001", "hello") is False

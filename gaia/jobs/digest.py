@@ -105,10 +105,20 @@ async def send_digest(conn, client, wa, user: User) -> bool:
         return False
 
     if await _within_window(conn, user):
-        await wa.send_text(user.wa_id, text)
+        delivered = await wa.send_text(user.wa_id, text)
     else:
         # Free-form sends are rejected outside the 24-hour service window.
-        await wa.send_template(user.wa_id, text)
+        delivered = await wa.send_template(user.wa_id, text)
+
+    # Nothing is recorded unless the send actually landed. Recording it anyway
+    # incremented nudge counts, wrote the digest into her thread as though she
+    # had read it, and set last_digest_on so today would not be retried — for
+    # a message she never received. Tomorrow's then says "still open from
+    # yesterday" about something she was never told. Returning here instead
+    # leaves the state untouched, so the next 15-minute tick tries again.
+    if not delivered:
+        log.error("digest send failed for user %s; leaving it unsent", user.id)
+        return False
 
     await leads_db.mark_nudged(conn, user, [r["id"] for r in leads])
     await commitments_db.mark_nudged(conn, user, [r["id"] for r in commitments])

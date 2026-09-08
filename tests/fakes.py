@@ -39,19 +39,29 @@ class FakeAnthropic:
 
 
 class FakeWhatsApp:
-    def __init__(self, media_errors: set[str] | None = None):
+    def __init__(self, media_errors: set[str] | None = None, reject_sends: bool = False):
         self.sent: list[tuple[str, str]] = []
         self.templates: list[tuple[str, str]] = []
         self.downloaded: list[str] = []
+        # Meta rejecting a send — a closed 24h window, a dead token, a rate
+        # limit. Real sends return False for it; nothing recorded a send as
+        # having happened before this existed.
+        self.reject_sends = reject_sends
         # media_ids in here raise instead of "downloading" — simulates a
         # single bad photo in a burst without touching real media.
         self._media_errors = media_errors or set()
 
-    async def send_text(self, to: str, body: str) -> None:
+    async def send_text(self, to: str, body: str) -> bool:
+        if self.reject_sends:
+            return False
         self.sent.append((to, body))
+        return True
 
-    async def send_template(self, to: str, body: str) -> None:
+    async def send_template(self, to: str, body: str) -> bool:
+        if self.reject_sends:
+            return False
         self.templates.append((to, body))
+        return True
 
     async def download_media(self, media_id: str) -> dict:
         self.downloaded.append(media_id)

@@ -88,3 +88,26 @@ async def test_never_messaged_a_template_is_used(conn, ana):
 
     await digest.send_digest(conn, client, wa, ana)
     assert wa.sent == [] and len(wa.templates) == 1
+
+
+async def test_a_rejected_send_records_nothing(conn, ana):
+    """A rejected template, an expired token or a rate limit used to leave
+    nudge counts incremented, the digest logged into her thread as though she
+    had read it, and last_digest_on set so today would not be retried. She
+    got nothing and the system believed it had told her."""
+    from gaia.core.db import messages as messages_db
+
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+    await leads_db.create(
+        conn, ana, contact_name="Maria", description="Buying", next_action_at=past
+    )
+    wa = FakeWhatsApp(reject_sends=True)
+    client = FakeAnthropic([FakeResponse([TextBlock("Morning! Maria is due.")])])
+
+    assert await digest.send_digest(conn, client, wa, ana) is False
+
+    due = await leads_db.due_for(conn, ana)
+    assert [r["nudge_count"] for r in due] == [0]
+    assert await messages_db.recent(conn, ana) == []
+    cur = await conn.execute("SELECT last_digest_on FROM users WHERE id = %s", (ana.id,))
+    assert (await cur.fetchone())["last_digest_on"] is None
