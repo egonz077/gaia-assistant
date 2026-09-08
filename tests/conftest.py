@@ -9,3 +9,36 @@ os.environ.setdefault("WA_APP_SECRET", "test-secret")
 os.environ.setdefault("WA_VERIFY_TOKEN", "test-verify")
 os.environ.setdefault("WA_PHONE_NUMBER_ID", "1234567890")
 os.environ.setdefault("DATABASE_URL", "postgresql://placeholder/overridden_by_pool_fixture")
+
+import pathlib
+import psycopg
+import pytest
+import pytest_asyncio
+from psycopg_pool import AsyncConnectionPool
+
+PGDATA = pathlib.Path("/tmp/claude-1000/gaia_pgdata")
+
+
+@pytest.fixture(scope="session")
+def pg_uri():
+    """One pgserver instance for the whole session."""
+    import pgserver
+    PGDATA.mkdir(parents=True, exist_ok=True)
+    return pgserver.get_server(str(PGDATA)).get_uri()
+
+
+@pytest_asyncio.fixture
+async def pool(pg_uri):
+    """A pool against a freshly dropped-and-recreated gaia_test database."""
+    base, _, qs = pg_uri.partition("?")
+    root = base.rsplit("/", 1)[0]
+    admin, target = f"{root}/postgres?{qs}", f"{root}/gaia_test?{qs}"
+
+    async with await psycopg.AsyncConnection.connect(admin, autocommit=True) as c:
+        await c.execute("DROP DATABASE IF EXISTS gaia_test WITH (FORCE)")
+        await c.execute("CREATE DATABASE gaia_test")
+
+    p = AsyncConnectionPool(target, min_size=1, max_size=4, open=False)
+    await p.open(wait=True)
+    yield p
+    await p.close()
