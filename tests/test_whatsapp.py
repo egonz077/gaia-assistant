@@ -1,0 +1,121 @@
+import base64
+import hashlib
+import hmac
+import io
+
+import httpx
+import pytest
+from PIL import Image
+
+from gaia.core import whatsapp
+from gaia.core.images import MAX_EDGE
+
+
+def test_parse_extracts_a_text_message():
+    payload = {"entry": [{"changes": [{"value": {"messages": [
+        {"id": "wamid.1", "from": "13055550001", "type": "text", "text": {"body": "hello"}}
+    ]}}]}]}
+    assert whatsapp.parse_messages(payload) == [
+        {"id": "wamid.1", "from": "13055550001", "type": "text", "text": "hello"}
+    ]
+
+
+def test_parse_extracts_an_image_with_a_caption():
+    payload = {"entry": [{"changes": [{"value": {"messages": [
+        {"id": "wamid.2", "from": "1305", "type": "image",
+         "image": {"id": "media.9", "caption": "my notes"}}
+    ]}}]}]}
+    [msg] = whatsapp.parse_messages(payload)
+    assert msg["image_id"] == "media.9"
+    assert msg["caption"] == "my notes"
+
+
+def test_parse_ignores_status_callbacks():
+    assert whatsapp.parse_messages({"entry": [{"changes": [{"value": {"statuses": [{}]}}]}]}) == []
+
+
+def test_unsupported_types_degrade_to_text():
+    payload = {"entry": [{"changes": [{"value": {"messages": [
+        {"id": "wamid.3", "from": "1305", "type": "sticker"}
+    ]}}]}]}
+    [msg] = whatsapp.parse_messages(payload)
+    assert msg["type"] == "text"
+    assert "sticker" in msg["text"]
+
+
+def test_signature_verification(monkeypatch):
+    monkeypatch.setattr(whatsapp.settings, "wa_app_secret", "shh")
+    body = b'{"hello":"world"}'
+    good = "sha256=" + hmac.new(b"shh", body, hashlib.sha256).hexdigest()
+    assert whatsapp.verify_signature(body, good) is True
+    assert whatsapp.verify_signature(body, "sha256=deadbeef") is False
+    assert whatsapp.verify_signature(body, "") is False
+
+
+def _stub_async_client(monkeypatch, handler):
+    """Point whatsapp.httpx.AsyncClient at an in-process MockTransport so no
+    real network call is made."""
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+
+    def factory(*args, **kwargs):
+        return real_async_client(transport=transport)
+
+    monkeypatch.setattr(whatsapp.httpx, "AsyncClient", factory)
+
+
+@pytest.mark.asyncio
+async def test_send_text_posts_to_graph_and_logs_nothing_on_success(monkeypatch, caplog):
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"messages": [{"id": "wamid.out"}]})
+
+    _stub_async_client(monkeypatch, handler)
+    client = whatsapp.WhatsAppClient(token="tok", phone_number_id="123")
+
+    with caplog.at_level("ERROR"):
+        await client.send_text("13055550001", "hello there")
+
+    assert len(calls) == 1
+    request = calls[0]
+    assert request.url == f"{whatsapp.GRAPH}/123/messages"
+    assert request.headers["authorization"] == "Bearer tok"
+    assert not caplog.records
+
+
+@pytest.mark.asyncio
+async def test_post_logs_error_when_send_fails(monkeypatch, caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"error": {"message": "outside 24h window"}})
+
+    _stub_async_client(monkeypatch, handler)
+    client = whatsapp.WhatsAppClient(token="tok", phone_number_id="123")
+
+    with caplog.at_level("ERROR"):
+        await client.send_text("13055550001", "hello")
+
+    assert any("403" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_download_media_returns_downscaled_base64(monkeypatch):
+    buf = io.BytesIO()
+    Image.new("RGB", (5000, 3000), "white").save(buf, format="JPEG")
+    raw = buf.getvalue()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "graph.facebook.com":
+            return httpx.Response(200, json={"url": "https://cdn.example/media.9"})
+        return httpx.Response(200, content=raw, headers={"content-type": "image/jpeg"})
+
+    _stub_async_client(monkeypatch, handler)
+    client = whatsapp.WhatsAppClient(token="tok", phone_number_id="123")
+
+    result = await client.download_media("media.9")
+
+    assert set(result.keys()) == {"media_type", "data"}
+    assert result["media_type"] == "image/jpeg"
+    out = Image.open(io.BytesIO(base64.b64decode(result["data"])))
+    assert max(out.size) == MAX_EDGE
