@@ -186,7 +186,42 @@ rows. That keeps the blast radius of a mistake small and is why application-leve
 scoping is sufficient here; Postgres row-level security is the escalation if
 Gaia ever takes on a second organization.
 
-### 3.3 Fixes folded into the schema
+### 3.3 Visibility is not ownership
+
+Two different questions, and conflating them produces bugs in both directions:
+
+- **`visibility` governs reads.** Who is allowed to see this row.
+- **`user_id` governs responsibility.** Whose job this is.
+
+The morning digest filters on **ownership**, never visibility. Leads default to
+`org`, so a digest written against "visible due leads" would nag Ana every
+morning about Sofia's follow-ups — technically readable, emphatically not her
+work. Anything that tells a person what to do filters `user_id = me`; anything
+that answers a question filters on visibility.
+
+### 3.4 Derived rows inherit visibility
+
+A `memory_chunk` is derived from a meeting. A `commitment` is derived from a
+meeting. If a meeting is private and its derived rows default to `org`, the
+private note is hidden from the meetings list and *fully searchable by everyone*
+through semantic memory — the precise failure the visibility system exists to
+prevent.
+
+Two mechanisms, because application code is the thing that forgets:
+
+1. **On insert**, the repository writes the derived row inside the parent's
+   transaction and copies the parent's `visibility` and `user_id` explicitly.
+   `save_meeting` never takes a separate visibility for its children.
+2. **On update**, a Postgres trigger on `meetings` cascades a `visibility` change
+   to that meeting's `memory_chunks` and `commitments`. Reclassifying a meeting
+   as private after the fact is a thing people will do, and it must not leave
+   orphaned org-visible embeddings behind.
+
+The isolation suite (§9) asserts both paths: a private meeting's chunk is absent
+from another user's search, and flipping an existing meeting to private removes
+its chunk from their search.
+
+### 3.5 Fixes folded into the schema
 
 - **`leads` can finally be created.** The prototype read and updated the table
   but never inserted into it, so `query_leads` always returned empty and the
@@ -252,17 +287,64 @@ is most of what an agent router needs — it becomes an additive change.
    subscription over.
 2. Resolve `wa_id` → `User`. Unknown or inactive numbers are logged and dropped.
 3. Dedup on `wa_msg_id`; WhatsApp redelivers.
-4. Build content blocks. Images are downloaded, downscaled to 2576px on the long
+4. Log the inbound message and **take the user's turn lock** (§5.1). A burst is
+   coalesced into one turn rather than racing.
+5. Build content blocks. Images are downloaded, downscaled to 2576px on the long
    edge, re-encoded JPEG.
-5. Log the inbound message, then fetch history with
-   `recent_messages(user, exclude_wa_id=msg.id)`. Logging first is crash-safe for
-   dedup; excluding by id is what stops the prototype's bug where the current
-   message appeared twice in the request — once as history text without its
-   image, once as the real content.
-6. Run the tool loop, capped at 8 iterations.
-7. Log and send the reply.
+6. Fetch history with `recent_messages(user, exclude_wa_ids=[...])`. Logging
+   before reading is crash-safe for dedup; excluding by id is what stops the
+   prototype's bug where the current message appeared twice in the request — once
+   as history text without its image, once as the real content.
+7. Run the tool loop, capped at 8 iterations.
+8. Log and send the reply, then release the lock.
 
-### 5.1 Model configuration
+### 5.1 One turn at a time, per user
+
+People do not send one message. They send "notes from the Delgado showing," then
+a photo, then "oh and book the follow-up Tuesday" — three webhooks in five
+seconds. Handled naively that is three concurrent background tasks: interleaved
+tool calls, three overlapping replies, and racing writes to the same contact row.
+The prototype had this defect.
+
+Two mechanisms:
+
+- **Debounce.** An arriving message waits ~3 seconds for a follow-up. Anything
+  that lands in the window joins the same turn as additional content blocks. The
+  burst above becomes one coherent request with the photo and both sentences,
+  which is also what produces a sensible single reply.
+- **Per-user lock.** If a message arrives while a turn is genuinely in flight, it
+  queues rather than running concurrently. Serial processing means the second
+  message sees the first one's reply in history.
+
+An `asyncio.Lock` per user id is sufficient and requires that the app runs
+**a single uvicorn worker** — enforced in the Dockerfile `CMD`, because two
+workers would silently reintroduce the race. A Postgres session advisory lock is
+the drop-in upgrade if this ever needs to scale horizontally; at Gaia's volume it
+never will.
+
+### 5.2 Context assembly
+
+The prototype injected every contact profile into every request, justified as
+"small; inject whole thing for v1." That was true for one person and is not true
+here: contacts are org-shared, so the set is now the whole company's, growing
+with headcount, and `profile` is an append-only string that never compacts. Left
+alone it becomes the largest and noisiest part of every request.
+
+Replaced by two narrower mechanisms:
+
+- **A roster, not profiles.** Context carries names only — the current user's
+  recently-touched contacts, capped — so the model knows who exists and spells
+  them correctly.
+- **`lookup_contact(name)` as a tool.** Full profiles are fetched on demand, only
+  for people actually under discussion. Scoped by `visible_to` like any other
+  read.
+
+`profile` also gets a length cap. Consolidation — having the model periodically
+rewrite a profile into clean prose instead of pipe-delimited accretion — is
+listed in the prototype's own v2 notes and stays deferred, but the cap keeps the
+problem bounded until then.
+
+### 5.3 Model configuration
 
 `claude-opus-5`, `max_tokens=8000`, `output_config={"effort": "low"}` for chat
 turns. Notes:
@@ -283,7 +365,7 @@ side. Both handle this workload; Opus is the better transcriber of bad
 handwriting, which is the hardest thing this app does. It is one env var —
 `MODEL` — so it can be changed after seeing real transcription quality.
 
-### 5.2 The 24-hour window
+### 5.4 The 24-hour window
 
 WhatsApp only permits free-form messages within 24h of the user's last inbound
 message. The morning digest breaks this the first day someone goes quiet — the
@@ -300,6 +382,11 @@ Manager is a deployment prerequisite, not an afterthought.
 `jobs/digest.py` runs every 15 minutes as its own compose service and sends to
 each active user whose *local* time has just crossed 08:00. Per-user timezones
 mean this is not expressible as a single cron line.
+
+**The digest is scoped by ownership, not visibility** (§3.3): `WHERE l.user_id =
+%(me)s`, never the `visible_to` fragment. Ana's morning message is her own due
+leads and open commitments. Sofia's org-visible work is readable on request and
+is not Ana's to be reminded about.
 
 Sending sets `users.last_digest_on` to the user's local date, and a user whose
 `last_digest_on` already equals today is skipped. Without that, a container
@@ -392,41 +479,91 @@ There are currently zero tests. This is rebuilt test-first.
   including a tool_use-then-text sequence.
 - Fixtures `user_ana` and `user_sofia` exist for every isolation test.
 
-Tests that must exist before the code they cover:
+### 9.1 Isolation tests cover tables that do not exist yet
+
+Hand-listing isolation tests per table means the sixth table someone adds in six
+months quietly has none — and a missing isolation test looks exactly like a
+passing one. So the suite is built to fail closed:
+
+- `DOMAIN_TABLES` is a single constant. The isolation test is **parametrized over
+  it**: for each table, Ana creates a private row and Sofia asserts she cannot
+  read it through every public reader that touches that table.
+- A second test **introspects `information_schema`** and fails if any table with
+  a `visibility` column is missing from `DOMAIN_TABLES`. Adding a table without
+  adding coverage breaks the build.
+
+### 9.2 Tests that must exist before the code they cover
 
 | Area | Test |
 |---|---|
-| Isolation | Sofia cannot read Ana's private lead, contact, meeting, or memory chunk |
+| Isolation | Parametrized over `DOMAIN_TABLES`: Sofia cannot read Ana's private row |
+| Isolation | Every `visibility` table appears in `DOMAIN_TABLES` (introspection) |
 | Isolation | Sofia never sees Ana's message thread, even for `org` data |
 | Isolation | Semantic search excludes another user's private chunks |
+| Inheritance | A private meeting's memory chunk is absent from another user's search |
+| Inheritance | Flipping an existing meeting to private removes its chunk from search |
 | Access | A private capability's tools are absent from that user's tool list |
 | Access | Dispatching a private capability's tool by name is refused |
-| Scoping | Every public reader in `core/db` takes `user` first (reflection test) |
+| Scoping | Every public function in `core/db` takes `user` first (reflection test) |
+| Ownership | Ana's digest excludes Sofia's due leads, though they are `org`-visible |
+| Concurrency | Three messages in one burst produce one turn and one reply |
+| Concurrency | A message arriving mid-turn queues rather than running concurrently |
 | Webhook | Bad signature → 403; unknown sender → dropped; duplicate id → no-op |
 | Webhook | Handler returns 200 before the agent loop completes |
 | Leads | A lead created via the tool appears in the owner's digest |
 | Digest | Silent on an empty day; escalates wording as `nudge_count` rises |
 | Window | Outside 24h the digest uses a template, not free-form text |
 | Agent loop | Empty text is never sent; iteration cap terminates |
+| Context | Request carries a contact roster, not full profiles |
+
+The reflection test checks a parameter name, which catches carelessness rather
+than a genuinely wrong query — it is a tripwire, not a proof. The parametrized
+isolation tests above are what actually establish that scoping works.
 
 ## 10. Review defects, and where each is handled
 
+From the prototype code review:
+
 | # | Defect | Section |
 |---|---|---|
-| 1 | Leads never created | 3.3 |
+| 1 | Leads never created | 3.5 |
 | 2 | Cron has no environment | 6 |
-| 3 | Caddy never sees `DOMAIN` | 8 |
+| 3 | Caddy never sees `DOMAIN` | 8.3 |
 | 4 | Webhook blocks on the agent loop | 5 |
 | 5 | Current message sent twice | 5 |
-| 6 | Everything computed in UTC | 3.1, 8 |
-| 7 | `happened_at` always now | 3.3 |
-| 8 | Send failures silent | 5.2 |
-| 9 | Digest re-nags identically | 3.3, 6 |
-| 10 | Empty reply sent to WhatsApp | 5.1 |
-| 11 | Obsolete model id | 5.1 |
-| 12 | `max_tokens` too low for thinking | 5.1 |
-| 13 | No prompt caching | 5.1 |
+| 6 | Everything computed in UTC | 3.1, 8.3 |
+| 7 | `happened_at` always now | 3.5 |
+| 8 | Send failures silent | 5.4 |
+| 9 | Digest re-nags identically | 3.5, 6 |
+| 10 | Empty reply sent to WhatsApp | 5.3 |
+| 11 | Obsolete model id | 5.3 |
+| 12 | `max_tokens` too low for thinking | 5.3 |
+| 13 | No prompt caching | 5.3 |
 | 14 | Full-resolution images | 5 |
+
+From reviewing this spec — four of these were single-user assumptions carried
+into a multi-user design:
+
+| # | Defect | Section |
+|---|---|---|
+| 15 | Derived rows did not inherit visibility, leaking private notes into search | 3.4 |
+| 16 | Digest scoped by visibility would nag people about colleagues' work | 3.3, 6 |
+| 17 | Bursty messages raced; no per-user serialization | 5.1 |
+| 18 | All contact profiles injected per request; unbounded once org-shared | 5.2 |
+| 19 | Isolation tests hand-listed, so new tables got no coverage | 9.1 |
+
+### 10.1 Accepted debt
+
+- **Contact merges are lossy.** `profile` is an append-only string, so
+  `merge-contacts` cannot cleanly interleave two histories. Acceptable while
+  duplicates are rare; profile consolidation would fix it properly.
+- **No transcription eval.** The app's core value is reading bad handwriting and
+  nothing measures whether it does. A fixture set of real note photos with
+  expected extractions, run manually against model changes, is the cheap version
+  — worth building once there are real photos to use.
+- **Offboarding is undefined.** Deactivation preserves a departed agent's data,
+  but their `private` rows stay private to an account nobody uses. Ownership
+  transfer is a later CLI command.
 
 ## 11. Settled decisions
 
@@ -450,6 +587,6 @@ Tests that must exist before the code they cover:
 - **Git identity** is unset in this repo and must be configured before the first
   commit.
 - **DigitalOcean Spaces bucket** and credentials for backups.
-- **Model choice** (§5.1) is specced as `claude-opus-5` and is one env var. Worth
+- **Model choice** (§5.3) is specced as `claude-opus-5` and is one env var. Worth
   revisiting after seeing real handwriting transcription quality against the
   roughly 2.5x cost difference versus Sonnet 5.
