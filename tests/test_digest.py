@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from gaia.core.db import leads as leads_db
+from gaia.core.db import users as users_db
 from gaia.jobs import digest
 from tests.fakes import FakeAnthropic, FakeResponse, FakeWhatsApp, TextBlock
 
@@ -13,6 +14,9 @@ async def test_quiet_day_sends_nothing(conn, ana):
 
 
 async def test_due_lead_produces_a_message(conn, ana):
+    # A recent inbound message opens the 24h customer service window, so the
+    # free-form send_text path is used rather than the template.
+    await users_db.touch_inbound(conn, ana)
     past = datetime.now(timezone.utc) - timedelta(days=1)
     await leads_db.create(
         conn, ana, contact_name="Maria Delgado", description="Buying",
@@ -24,6 +28,7 @@ async def test_due_lead_produces_a_message(conn, ana):
     assert await digest.send_digest(conn, client, wa, ana) is True
     assert wa.sent[0][0] == ana.wa_id
     assert "Maria" in wa.sent[0][1]
+    assert wa.templates == []
 
 
 async def test_digest_excludes_a_colleagues_due_lead(conn, ana, sofia):
@@ -60,6 +65,23 @@ async def test_outside_the_window_a_template_is_used(conn, ana):
     await conn.execute(
         "UPDATE users SET last_inbound_at = now() - interval '30 hours' WHERE id = %s",
         (ana.id,),
+    )
+    wa = FakeWhatsApp()
+    client = FakeAnthropic([FakeResponse([TextBlock("Morning!")])])
+
+    await digest.send_digest(conn, client, wa, ana)
+    assert wa.sent == [] and len(wa.templates) == 1
+
+
+async def test_never_messaged_a_template_is_used(conn, ana):
+    """The newly-onboarded case: an admin adds the user via the CLI and she
+    has not texted the number yet, so `last_inbound_at` is NULL. No inbound
+    message means no open customer-service window at all — not an unknown
+    one — so this must take the template path exactly like a stale window,
+    not the free-form path. This is the case that regressed once already."""
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+    await leads_db.create(
+        conn, ana, contact_name="Maria", description="Buying", next_action_at=past
     )
     wa = FakeWhatsApp()
     client = FakeAnthropic([FakeResponse([TextBlock("Morning!")])])

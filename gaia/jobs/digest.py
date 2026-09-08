@@ -53,14 +53,14 @@ async def due_users(conn, now_utc: datetime | None = None) -> list[User]:
 
 
 async def _within_window(conn, user: User) -> bool:
-    """True unless the user has messaged us before and it was more than 24h
-    ago. A user who has never messaged in (no row yet, e.g. freshly onboarded)
-    has no known-stale session to reject the send over, so NULL counts as
-    in-window; only a *known* last inbound message older than the window
-    forces the template path."""
+    """The customer service window opens when the user messages the
+    business, not before. A user who has never sent an inbound message has
+    no open window at all — not an unknown one — so NULL `last_inbound_at`
+    must be treated as *outside* the window, same as one older than 24h:
+    both require the approved template rather than a free-form send."""
     cur = await conn.execute(
-        f"""SELECT last_inbound_at IS NULL
-                   OR last_inbound_at > now() - interval '{WINDOW_HOURS} hours' AS ok
+        f"""SELECT last_inbound_at IS NOT NULL
+                   AND last_inbound_at > now() - interval '{WINDOW_HOURS} hours' AS ok
             FROM users WHERE id = %s""",
         (user.id,),
     )
