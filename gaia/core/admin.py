@@ -26,11 +26,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _run(args) -> None:
-    pool = get_pool()
-    await pool.open(wait=True)
+async def _run(args, pool=None) -> None:
+    """Run one subcommand against `pool`, or the process-wide pool if omitted.
+
+    An injected pool is the caller's to open/close (tests own the lifecycle
+    of their test pool); only a pool we constructed ourselves here — the
+    `main()` path — gets opened and closed by this function.
+    """
+    owns_pool = pool is None
+    p = pool or get_pool()
+    await p.open(wait=True)
     try:
-        async with tx(pool) as conn:
+        async with tx(p) as conn:
             if args.command == "add-user":
                 user = await users_db.create_user(
                     conn, name=args.name, wa_id=args.phone, role=args.role, timezone=args.tz
@@ -44,7 +51,8 @@ async def _run(args) -> None:
                 ok = await users_db.deactivate(conn, args.phone)
                 print("deactivated" if ok else f"no user with phone {args.phone}")
     finally:
-        await pool.close()
+        if owns_pool:
+            await p.close()
 
 
 def main() -> None:

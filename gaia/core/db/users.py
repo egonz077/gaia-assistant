@@ -41,7 +41,10 @@ async def get_by_wa_id(conn, wa_id: str) -> User | None:
 
 
 async def list_users(conn) -> list[User]:
-    cur = await conn.execute(f"SELECT {_COLUMNS} FROM users ORDER BY created_at")
+    # wa_id tiebreaker: two rows created in the same transaction share an
+    # identical created_at (Postgres now() is frozen per-transaction), so
+    # ORDER BY created_at alone leaves their relative order unspecified.
+    cur = await conn.execute(f"SELECT {_COLUMNS} FROM users ORDER BY created_at, wa_id")
     return [_row_to_user(r) for r in await cur.fetchall()]
 
 
