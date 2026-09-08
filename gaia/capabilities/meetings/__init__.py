@@ -21,8 +21,10 @@ SAVE_SCHEMA = {
         },
         "private": {
             "type": "boolean",
-            "description": "True if she asks to keep this off the company record. "
-                           "Defaults to false: colleagues can see it.",
+            "description": "True if the user asks to keep this off the company record. "
+                           "Defaults to false: colleagues can see it. A private meeting "
+                           "also contributes nothing to shared contact profiles - see "
+                           "profile_update.",
         },
         "contacts": {
             "type": "array",
@@ -32,7 +34,10 @@ SAVE_SCHEMA = {
                     "name": {"type": "string"},
                     "profile_update": {
                         "type": "string",
-                        "description": "New facts about this person to merge into their profile",
+                        "description": "New facts about this person to merge into their "
+                                       "profile, which every agent at Gaia can read. "
+                                       "Skipped when private is true: nothing learned in "
+                                       "a private meeting is written to a shared profile.",
                     },
                 },
                 "required": ["name"],
@@ -71,11 +76,15 @@ CAPABILITY = Capability(
     name="meetings",
     description="Filing and recalling meeting notes",
     prompt_fragment=(
-        "\nWhen she asks you to keep something off the company record, pass private: true "
+        "\nWhen you are asked to keep something off the company record, pass private: true "
         "to save_meeting. Otherwise colleagues at Gaia can see it, which is the default.\n"
-        "If she later decides an already-filed meeting should be made private - or put back "
-        "on the record - use set_meeting_visibility. This also hides (or restores) that "
-        "meeting's notes in company-wide search.\n"
+        "A private meeting stays private end to end: its notes are excluded from "
+        "company-wide search, and nothing learned in it is added to a person's shared "
+        "contact profile, even if you pass profile_update. save_meeting tells you when it "
+        "skipped one - say so plainly rather than implying it was filed on their profile.\n"
+        "If an already-filed meeting should later be made private - or put back on the "
+        "record - use set_meeting_visibility. This also hides (or restores) that meeting's "
+        "notes in company-wide search.\n"
     ),
     tools=(
         Tool("save_meeting",

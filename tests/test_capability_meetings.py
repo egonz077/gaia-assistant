@@ -29,6 +29,61 @@ async def test_save_meeting_respects_private(conn, ana, sofia):
     assert (await search_memory(conn, ana, {"query": "divorce"}))["results"] != []
 
 
+CONFIDENCE = "divorcing, must sell by Dec, will take 540 if pushed"
+
+
+async def test_a_private_meetings_profile_update_never_reaches_the_company(conn, ana, sofia):
+    """The failure `private` exists to prevent, one table over.
+
+    `contacts.profile` is a single org-visible string on a row `get_or_create`
+    hands back across users, so there is nowhere on a shared contact to put a
+    fact learned in confidence. Merging one there published it verbatim to
+    every agent at Gaia through lookup_contact, while the meeting itself was
+    correctly hidden — hidden from the meetings list and fully readable by
+    everyone, which looks private and is not.
+    """
+    result = await save_meeting(conn, ana, {
+        "summary": "Quiet divorce sale",
+        "contacts": [{"name": "Rivera", "profile_update": CONFIDENCE}],
+        "private": True,
+    })
+
+    # Not through the tool that reads profiles...
+    sofia_view = await lookup_contact(conn, sofia, {"name": "Rivera"})
+    assert CONFIDENCE not in str(sofia_view)
+
+    # ...nor through semantic search...
+    assert (await search_memory(conn, sofia, {"query": "divorce sale"}))["results"] == []
+
+    # ...nor anywhere else, because it was never written to a shared row at all.
+    cur = await conn.execute("SELECT profile FROM contacts WHERE name = 'Rivera'")
+    assert [r["profile"] for r in await cur.fetchall()] == [""]
+
+    # Even the owner does not get it on the shared profile; it lives in the
+    # private meeting note, which only she can search.
+    ana_view = await lookup_contact(conn, ana, {"name": "Rivera"})
+    assert CONFIDENCE not in str(ana_view)
+    assert (await search_memory(conn, ana, {"query": "divorce sale"}))["results"] != []
+
+    # And the model is told, not silently ignored — otherwise it reports back
+    # that it filed something it did not file.
+    assert result["profile_updates_skipped"] == ["Rivera"]
+
+
+async def test_an_org_meetings_profile_update_still_merges(conn, ana, sofia):
+    """The gate is on privacy, not on profile_update as such — a normal
+    meeting must still build the shared profile, or the company's contact
+    book stops growing."""
+    result = await save_meeting(conn, ana, {
+        "summary": "Showed the Coral Gables place",
+        "contacts": [{"name": "Rivera", "profile_update": "wants a pool"}],
+    })
+
+    assert "profile_updates_skipped" not in result
+    colleague_view = await lookup_contact(conn, sofia, {"name": "Rivera"})
+    assert "wants a pool" in colleague_view["contact"]["profile"]
+
+
 def test_capability_is_public():
     assert CAPABILITY.allowed_roles is None
     assert CAPABILITY.allowed_user_ids is None
