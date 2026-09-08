@@ -22,6 +22,7 @@ async def tx(pool: AsyncConnectionPool | None = None):
     Commits on clean exit, rolls back on exception.
     """
     p = pool or get_pool()
+    await p.open()  # idempotent; guards against an unopened pool, not a substitute
     async with p.connection() as conn:
         conn.row_factory = dict_row
         async with conn.transaction():

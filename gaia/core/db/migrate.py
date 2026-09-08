@@ -11,14 +11,26 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 
 async def run_migrations(pool) -> list[str]:
-    """Apply pending migrations in filename order. Returns what was applied."""
+    """Apply pending migrations in filename order, as a single transaction.
+
+    Guarded by a transaction-scoped advisory lock (pg_advisory_xact_lock):
+    serialises concurrent callers, and — because it is tied to the
+    transaction rather than the session — is released automatically on
+    commit *or* rollback. A failure anywhere in the batch rolls back every
+    migration and every schema_migrations row from this call; nothing is
+    left half-applied and no lock is left held on the connection when it
+    goes back to the pool.
+    """
     applied: list[str] = []
     async with pool.connection() as conn:
-        # Serialise across replicas; harmless with one.
-        await conn.execute("SELECT pg_advisory_lock(hashtext('gaia_migrations'))")
-        try:
-            await conn.execute(_CREATE_TABLE)
-            await conn.commit()
+        # schema_migrations must exist before it can be queried below, and
+        # this needs its own transaction: the lock (and the batch it guards)
+        # must not depend on this table having just been created.
+        await conn.execute(_CREATE_TABLE)
+        await conn.commit()
+
+        async with conn.transaction():
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext('gaia_migrations'))")
 
             cur = await conn.execute("SELECT name FROM schema_migrations")
             done = {r[0] for r in await cur.fetchall()}
@@ -30,8 +42,5 @@ async def run_migrations(pool) -> list[str]:
                 await conn.execute(
                     "INSERT INTO schema_migrations (name) VALUES (%s)", (path.name,)
                 )
-                await conn.commit()
                 applied.append(path.name)
-        finally:
-            await conn.execute("SELECT pg_advisory_unlock(hashtext('gaia_migrations'))")
     return applied
