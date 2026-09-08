@@ -79,3 +79,81 @@ async def test_run_deactivate_revokes_access_and_reports_missing_phone(migrated,
     await _run(build_parser().parse_args(["deactivate", "--phone", "19998887777"]), pool=migrated)
     out = capsys.readouterr().out
     assert "no user with phone 19998887777" in out
+
+
+# --- I8: an unvalidated timezone is a company-wide outage, not a typo. It
+# raises inside due_users' per-user loop, so one bad row means no user gets a
+# digest ever; and inside build_system_prompt, so that agent gets the apology
+# text for every message she sends, forever.
+
+
+def test_parser_rejects_an_unknown_timezone(capsys):
+    import pytest
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            ["add-user", "--name", "Ana", "--phone", "1305", "--tz", "America/NewYork"]
+        )
+    assert "unknown timezone" in capsys.readouterr().err
+
+
+def test_parser_accepts_a_real_timezone():
+    args = build_parser().parse_args(
+        ["add-user", "--name", "Ana", "--phone", "1305", "--tz", "America/Chicago"]
+    )
+    assert args.tz == "America/Chicago"
+
+
+# --- I9: merge-contacts is the documented remedy for the non-unique name
+# index and for get_or_create's race. Spec §7 listed it; build_parser did not.
+
+
+async def test_run_merge_contacts_folds_one_contact_into_another(migrated, capsys):
+    from psycopg.rows import dict_row
+
+    from gaia.core.db import contacts as contacts_db
+
+    await _run(
+        build_parser().parse_args(["add-user", "--name", "Ana", "--phone", "13055550001"]),
+        pool=migrated,
+    )
+    capsys.readouterr()
+
+    async with migrated.connection() as conn:
+        conn.row_factory = dict_row
+        async with conn.transaction():
+            ana = await users_db.get_by_wa_id(conn, "13055550001")
+            keep = await contacts_db.create_contact(conn, ana, name="Maria Delgado")
+            dupe = await contacts_db.create_contact(conn, ana, name="maria delgado")
+            await contacts_db.merge_profile(conn, ana, dupe, "budget 600k")
+
+    await _run(
+        build_parser().parse_args([
+            "merge-contacts", "--from", str(dupe), "--into", str(keep),
+            "--as", "13055550001",
+        ]),
+        pool=migrated,
+    )
+    assert "merged" in capsys.readouterr().out
+
+    async with migrated.connection() as conn:
+        conn.row_factory = dict_row
+        async with conn.transaction():
+            found = await contacts_db.lookup(conn, ana, "Maria Delgado")
+            cur = await conn.execute("SELECT count(*) AS n FROM contacts")
+            remaining = (await cur.fetchone())["n"]
+    assert remaining == 1
+    assert "budget 600k" in found["profile"]
+
+
+async def test_run_merge_contacts_reports_an_unknown_acting_user(migrated, capsys):
+    from uuid import uuid4
+
+    await _run(
+        build_parser().parse_args([
+            "merge-contacts", "--from", str(uuid4()), "--into", str(uuid4()),
+            "--as", "19998887777",
+        ]),
+        pool=migrated,
+    )
+    assert "no active user with phone 19998887777" in capsys.readouterr().out

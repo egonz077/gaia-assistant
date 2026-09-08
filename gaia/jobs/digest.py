@@ -37,18 +37,29 @@ async def due_users(conn, now_utc: datetime | None = None) -> list[User]:
     now_utc = now_utc or datetime.now(timezone.utc)
     out = []
     for user in await users_db.list_users(conn):
-        if not user.active:
-            continue
-        local = now_utc.astimezone(ZoneInfo(user.timezone))
-        if local.hour < SEND_HOUR:
-            continue
-        cur = await conn.execute(
-            "SELECT last_digest_on FROM users WHERE id = %s", (user.id,)
-        )
-        last = (await cur.fetchone())["last_digest_on"]
-        if last == local.date():
-            continue  # already sent today; a restart must not double-send
-        out.append(user)
+        # One unusable row must not cost everyone else their digest. The
+        # obvious way in is `users.timezone`, plain TEXT: `ZoneInfo()` on a
+        # typo raises here, inside run_once, whose exception is only caught at
+        # the top of main() — so a single bad row meant nobody in the company
+        # got a digest, ever, with one `digest run failed` line every fifteen
+        # minutes. The CLI validates the timezone now (core/admin.py); this
+        # guard is the half that holds even for a row that got in some other
+        # way, which is the half that matters at 8am.
+        try:
+            if not user.active:
+                continue
+            local = now_utc.astimezone(ZoneInfo(user.timezone))
+            if local.hour < SEND_HOUR:
+                continue
+            cur = await conn.execute(
+                "SELECT last_digest_on FROM users WHERE id = %s", (user.id,)
+            )
+            last = (await cur.fetchone())["last_digest_on"]
+            if last == local.date():
+                continue  # already sent today; a restart must not double-send
+            out.append(user)
+        except Exception:
+            log.exception("skipping user %s while selecting digest recipients", user.id)
     return out
 
 
@@ -135,9 +146,16 @@ async def run_once(pool, client, wa) -> int:
     async with tx(pool) as conn:
         users = await due_users(conn)
     for user in users:
-        async with tx(pool) as conn:
-            if await send_digest(conn, client, wa, user):
-                sent += 1
+        # Same rule as due_users: one user's failure — a Graph timeout, a bad
+        # row, a model error — must not stop the rest of the company's
+        # digests. Each already runs in its own transaction; this makes the
+        # failure boundary match.
+        try:
+            async with tx(pool) as conn:
+                if await send_digest(conn, client, wa, user):
+                    sent += 1
+        except Exception:
+            log.exception("digest failed for user %s", user.id)
     return sent
 
 

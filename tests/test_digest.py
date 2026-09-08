@@ -111,3 +111,17 @@ async def test_a_rejected_send_records_nothing(conn, ana):
     assert await messages_db.recent(conn, ana) == []
     cur = await conn.execute("SELECT last_digest_on FROM users WHERE id = %s", (ana.id,))
     assert (await cur.fetchone())["last_digest_on"] is None
+
+
+async def test_one_unusable_user_does_not_cost_everyone_else_their_digest(conn, ana, sofia):
+    """`users.timezone` is plain TEXT. ZoneInfo() on a typo raised inside
+    due_users' loop, which is inside run_once, whose exception is caught only
+    at the top of main() — so one bad row meant *nobody* got a digest, with a
+    single `digest run failed` line every fifteen minutes."""
+    await conn.execute(
+        "UPDATE users SET timezone = 'America/NewYork' WHERE id = %s", (ana.id,)
+    )
+
+    due = await digest.due_users(conn, datetime(2026, 9, 8, 18, tzinfo=timezone.utc))
+
+    assert [u.id for u in due] == [sofia.id]

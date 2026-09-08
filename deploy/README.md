@@ -109,6 +109,35 @@ docker compose exec app python -m gaia.core.admin list-users
 docker compose exec app python -m gaia.core.admin deactivate --phone 13055550001
 ```
 
+`--tz` is validated against the IANA database before the row is written. It
+used to be any string, and a typo was not a typo: `ZoneInfo()` raises inside
+the digest's per-user loop, so one bad row meant nobody in the company got a
+digest again, and that agent got an error reply to every message she sent.
+
+## Merging duplicate contacts
+
+Two rows for the same person happen: the index on `lower(name)` is
+deliberately non-unique — different people share a name often enough that a
+unique constraint would force bad data — and two agents filing meetings with
+the same new client at the same moment can each create one.
+
+```bash
+# find the duplicates and their ids
+docker compose exec db psql -U gaia -d gaia -c \
+  "SELECT id, name, phone, left(profile, 60) FROM contacts ORDER BY lower(name), created_at"
+
+docker compose exec app python -m gaia.core.admin merge-contacts \
+    --from <id to delete> --into <id to keep> --as <agent's phone>
+```
+
+`--as` is required and is not decoration: the merge is scoped to what that
+agent can see, so nobody with a shell can fold an agent's *private* contact
+into an org row and publish its profile to the whole company. Merging is
+lossy in one respect only — `profile` is an append-only string, so the two
+histories are concatenated rather than interleaved. Everything else moves:
+leads, commitments, memory chunks, meeting links, and any phone or email the
+survivor was missing.
+
 `deactivate` is **immediate revocation** — the response to a lost or stolen
 phone. In this system a phone number is the credential: whoever holds the SIM
 (or has cloned the number) can act as that agent the moment a message arrives.
