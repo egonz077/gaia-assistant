@@ -1,3 +1,5 @@
+import json
+
 from gaia.capabilities.base import Capability, Registry, Tool
 from gaia.core.llm import FALLBACK_TEXT, run_agent
 from tests.fakes import FakeAnthropic, FakeResponse, TextBlock, ToolUseBlock
@@ -78,11 +80,11 @@ async def test_batches_multiple_tool_calls_into_one_message(ana):
 
     async def handler_a(conn, user, args):
         calls.append(("a", args))
-        return {"a": True}
+        return {"which": "alpha"}
 
     async def handler_b(conn, user, args):
         calls.append(("b", args))
-        return {"b": True}
+        return {"which": "beta"}
 
     reg = Registry()
     reg.register(
@@ -125,6 +127,10 @@ async def test_batches_multiple_tool_calls_into_one_message(ana):
     assert set(results_by_id) == {"tu_a", "tu_b"}
     assert results_by_id["tu_a"]["type"] == "tool_result"
     assert results_by_id["tu_b"]["type"] == "tool_result"
+    # Pairing, not just presence: tu_a must carry tool_a's own payload and
+    # tu_b must carry tool_b's — a swap of the two contents must fail this.
+    assert json.loads(results_by_id["tu_a"]["content"])["which"] == "alpha"
+    assert json.loads(results_by_id["tu_b"]["content"])["which"] == "beta"
 
 
 async def test_whitespace_only_response_falls_back(ana):
