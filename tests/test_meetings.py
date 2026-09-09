@@ -19,12 +19,26 @@ async def test_save_creates_contacts_and_commitments(conn, ana):
 
 
 async def test_happened_at_can_differ_from_now(conn, ana):
+    """Notes photographed the next morning file under the day the meeting
+    happened, not the day they were typed up.
+
+    Compared as an instant, not as a rendered date. `happened_at` is
+    `timestamptz` and comes back in the *session's* timezone, which is
+    America/New_York on the compose `db` service, while `yesterday` is built
+    in UTC — so a `.date()`-to-`.date()` comparison disagreed with itself
+    every night between UTC midnight and New York midnight. That is a real
+    four-hour window in which this failed for no reason at all.
+    """
     yesterday = datetime.now(timezone.utc) - timedelta(days=1)
     mid = await meetings_db.save(
         conn, ana, summary="Yesterday's showing", source="photo_notes", happened_at=yesterday
     )
     cur = await conn.execute("SELECT happened_at FROM meetings WHERE id = %s", (mid,))
-    assert (await cur.fetchone())["happened_at"].date() == yesterday.date()
+    stored = (await cur.fetchone())["happened_at"]
+
+    assert stored == yesterday
+    assert stored.astimezone(timezone.utc).date() == yesterday.date()
+    assert stored < datetime.now(timezone.utc) - timedelta(hours=23)
 
 
 async def test_derived_rows_inherit_visibility_on_insert(conn, ana):
