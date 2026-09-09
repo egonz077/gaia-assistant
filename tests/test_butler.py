@@ -1,6 +1,10 @@
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+import pytest
 import pytest_asyncio
 
-from gaia.butler import APOLOGY_TEXT, handle_turn
+from gaia.butler import APOLOGY_TEXT, handle_turn, today_line
 from tests.fakes import FakeAnthropic, FakeResponse, TextBlock
 
 
@@ -268,3 +272,62 @@ class TestSystemPrompt:
 
         assert "Rivera" not in volatile
         assert "(nobody yet)" in volatile
+
+    async def test_context_names_the_weekday_not_just_the_date(self, conn, ana):
+        """The model derived the day of the week itself and got it wrong — one
+        live turn called 2026-09-11 "Friday", the next called it "Thu". For a
+        scheduling assistant that is the difference between comps sent on the
+        right day and the wrong one.
+
+        Cross-checked with strftime rather than with butler.WEEKDAYS, so the
+        tuple is not asserting itself. Production deliberately avoids
+        strftime: %A is locale-dependent, and the container's LANG must not be
+        able to change what day the assistant thinks it is.
+        """
+        from gaia.butler import build_system_prompt
+
+        _, volatile = await build_system_prompt(conn, ana)
+
+        today = datetime.now(ZoneInfo(ana.timezone))
+        assert f"Today is {today.strftime('%A')} {today.date().isoformat()} in" in volatile
+
+    async def test_todays_weekday_stays_out_of_the_cached_prefix(self, conn, ana):
+        """It changes daily by definition, so the live value belongs after the
+        breakpoint — in the stable half it would invalidate the system prompt
+        and every tool definition once a day for no benefit. (The prompt's
+        fixed "Friday, Sept 11" example is a constant and caches fine, which
+        is why this asserts on the rendered value rather than on the word.)
+        """
+        from gaia.butler import build_system_prompt
+
+        stable, volatile = await build_system_prompt(conn, ana)
+
+        rendered = today_line(datetime.now(ZoneInfo(ana.timezone)))
+        assert rendered not in stable
+        assert rendered in volatile
+
+
+@pytest.mark.parametrize(
+    "iso,weekday",
+    [
+        ("2026-09-11", "Friday"),    # the date the live smoke run got wrong
+        ("2026-09-08", "Tuesday"),
+        ("2026-09-13", "Sunday"),
+        ("2026-01-01", "Thursday"),
+        ("2026-12-31", "Thursday"),
+    ],
+)
+def test_today_line_names_the_right_weekday(iso, weekday):
+    """Real calendar facts, so an off-by-one in WEEKDAYS cannot pass."""
+    moment = datetime.fromisoformat(f"{iso}T09:00:00+00:00")
+    assert today_line(moment) == f"{weekday} {iso}"
+
+
+def test_today_line_follows_the_users_timezone_across_midnight():
+    """Derived from the same timezone-aware datetime as the date, so the two
+    can never disagree — including for the agent whose local day has already
+    turned over."""
+    instant = datetime.fromisoformat("2026-09-12T01:30:00+00:00")
+
+    assert today_line(instant.astimezone(ZoneInfo("America/New_York"))) == "Friday 2026-09-11"
+    assert today_line(instant.astimezone(ZoneInfo("UTC"))) == "Saturday 2026-09-12"

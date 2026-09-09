@@ -1,4 +1,6 @@
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from gaia.capabilities.base import registry
 from gaia.core.db import contacts as contacts_db
@@ -22,7 +24,8 @@ reachable over WhatsApp.
 When {name} sends meeting notes — typed or photographed handwriting — transcribe if needed, then \
 extract a short summary, the people involved, commitments made, and any follow-up dates. Save \
 them with your tools. Echo back what you understood and ask {name} to confirm anything ambiguous: \
-names, numbers, dates.
+names, numbers, dates. Give the weekday whenever you name a date — "Friday, Sept 11" — so a wrong \
+day is obvious at a glance rather than acted on.
 
 Answer questions about past meetings, leads and contacts using your tools. Never contact third \
 parties.
@@ -31,10 +34,30 @@ Style: brief and warm, like a text message. No markdown headers or bullet lists.
 """
 
 # Everything that changes turn to turn lives here, after the cache breakpoint.
+# The weekday belongs on this side of it too: it changes daily, by definition.
 CONTEXT_PROMPT = """Today is {today} in {name}'s timezone ({tz}).
 People {name} has worked with recently: {roster}
 Use lookup_contact for details on any of them.
 """
+
+# Not strftime("%A"): that is locale-dependent, and a scheduling assistant
+# whose weekday changes with the container's LANG is worse than one with no
+# weekday at all.
+WEEKDAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+
+
+def today_line(now: datetime) -> str:
+    """The weekday and the ISO date, from one instant so they cannot disagree.
+
+    Injecting the bare ISO date left the model to derive the day of the week
+    itself, and it is unreliable at it: in one live run it called 2026-09-11
+    "Friday" in one turn and "Thu" in the next. For a scheduling assistant
+    that is material — she says "send comps by Friday", the bot files it and
+    tells her Thursday, and she works the wrong day. Two halves of one
+    conversation contradicting each other also costs trust in everything else
+    it says.
+    """
+    return f"{WEEKDAYS[now.weekday()]} {now.date().isoformat()}"
 
 
 async def build_system_prompt(conn, user: User) -> list[str]:
@@ -47,11 +70,8 @@ async def build_system_prompt(conn, user: User) -> list[str]:
     every reorder was a full miss on the system prompt *and* the tool
     definitions, rewritten at 1.25x. Spec §5.3 asked for exactly this split.
     """
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-
     names = await contacts_db.roster(conn, user)
-    today = datetime.now(ZoneInfo(user.timezone)).date().isoformat()
+    today = today_line(datetime.now(ZoneInfo(user.timezone)))
     stable = BASE_PROMPT.format(name=user.name) + registry.prompt_fragments(user)
     volatile = CONTEXT_PROMPT.format(
         name=user.name,
