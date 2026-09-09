@@ -48,26 +48,58 @@ async def test_a_private_meetings_profile_update_never_reaches_the_company(conn,
         "private": True,
     })
 
-    # Not through the tool that reads profiles...
+    # --- Sofia reaches it by no path at all.
     sofia_view = await lookup_contact(conn, sofia, {"name": "Rivera"})
     assert CONFIDENCE not in str(sofia_view)
-
-    # ...nor through semantic search...
     assert (await search_memory(conn, sofia, {"query": "divorce sale"}))["results"] == []
-
-    # ...nor anywhere else, because it was never written to a shared row at all.
+    # Not merely filtered out of her reads — never written to a shared row.
     cur = await conn.execute("SELECT profile FROM contacts WHERE name = 'Rivera'")
     assert [r["profile"] for r in await cur.fetchall()] == [""]
 
-    # Even the owner does not get it on the shared profile; it lives in the
-    # private meeting note, which only she can search.
+    # --- Ana does not get it on the shared profile either...
     ana_view = await lookup_contact(conn, ana, {"name": "Rivera"})
     assert CONFIDENCE not in str(ana_view)
-    assert (await search_memory(conn, ana, {"query": "divorce sale"}))["results"] != []
 
-    # And the model is told, not silently ignored — otherwise it reports back
-    # that it filed something it did not file.
+    # ...but she can still get it back, which is the half that makes the tool's
+    # own message true. Telling her a client confidence was kept somewhere it
+    # does not exist would be worse than dropping it visibly: a visible drop
+    # lets her retype it.
+    hits = await search_memory(conn, ana, {"query": "divorce sale"})
+    assert any(CONFIDENCE in h["content"] for h in hits["results"])
+
+    # And it is durable in the meeting itself, not only in the index.
+    cur = await conn.execute(
+        "SELECT raw_input, visibility FROM meetings WHERE id = %s", (result["meeting_id"],)
+    )
+    meeting = await cur.fetchone()
+    assert CONFIDENCE in meeting["raw_input"]
+    assert meeting["visibility"] == "private"
+
+    # --- The model is told, and every claim in what it is told holds above.
     assert result["profile_updates_skipped"] == ["Rivera"]
+    assert "search_memory will find it" in result["note"]
+
+
+async def test_restoring_a_private_meeting_publishes_its_withheld_notes(conn, ana, sofia):
+    """Deliberate, and the reason it is pinned here rather than left implicit.
+
+    A private meeting's withheld profile updates live in that meeting's own
+    chunk, so putting the meeting back on the record publishes them along with
+    the rest of its notes. That is the promise set_meeting_visibility already
+    made, applied to all of the meeting's content rather than some of it, and
+    it only ever happens because the owner explicitly asked for it.
+    """
+    filed = await save_meeting(conn, ana, {
+        "summary": "Quiet divorce sale",
+        "contacts": [{"name": "Rivera", "profile_update": CONFIDENCE}],
+        "private": True,
+    })
+    assert (await search_memory(conn, sofia, {"query": "divorce sale"}))["results"] == []
+
+    await set_meeting_visibility(conn, ana, {"meeting_id": filed["meeting_id"], "private": False})
+
+    hits = await search_memory(conn, sofia, {"query": "divorce sale"})
+    assert any(CONFIDENCE in h["content"] for h in hits["results"])
 
 
 async def test_an_org_meetings_profile_update_still_merges(conn, ana, sofia):
