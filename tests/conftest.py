@@ -23,7 +23,16 @@ from gaia.core.db import users as users_db
 from gaia.core.db.migrate import run_migrations
 
 # The compose `db` service — pgvector/pgvector:pg17, the exact production image.
-# Start it with: docker compose up -d db
+#
+# Start it with the dev overlay, which is the thing that publishes 5432 on
+# loopback and pins the password below:
+#
+#     docker compose -f docker-compose.yml -f deploy/compose.dev.yml up -d db
+#
+# Plain `docker compose up -d db` is production and publishes no port at all,
+# so this DSN would have nothing to connect to. The overlay is deliberately not
+# named docker-compose.override.yml, which compose would auto-load — including
+# on the droplet.
 ADMIN_DSN = os.environ.get(
     "TEST_ADMIN_DSN", "postgresql://gaia:devpassword@127.0.0.1:5432/gaia"
 )

@@ -1,19 +1,41 @@
-# LOCAL DEVELOPMENT ONLY. Never use this on the droplet.
+# LOCAL DEVELOPMENT ONLY. This file must never reach the droplet.
 #
 # docker-compose.yml deliberately publishes no database port: production
 # Postgres is reachable only on the compose network (deploy/README.md, spec
 # §8.3). The test suite, however, runs on the host and connects over TCP, so
 # local dev needs 5432 published on loopback.
 #
-# That exception is opted into explicitly rather than left on by default:
+# That exception is opted into explicitly, and is the documented way to run the
+# suite from a clean checkout:
 #
+#     cp .env.example .env
 #     docker compose -f docker-compose.yml -f deploy/compose.dev.yml up -d db
 #     .venv/bin/python -m pytest -q
 #
 # This file is NOT named docker-compose.override.yml on purpose — compose
 # auto-loads that name, so an override file would silently republish the port
-# on the droplet the moment the repo was cloned there.
+# on the droplet the moment the repo was cloned there. Nothing here applies
+# unless you pass it with -f.
 services:
   db:
+    environment:
+      # Pinned here rather than taken from .env, so the suite does not depend
+      # on what a particular developer set DB_PASSWORD to. .env.example ships
+      # CHANGE_ME for production, and tests/conftest.py defaults to a DSN with
+      # this exact password — without this line a clean checkout would bring
+      # the database up behind a password the suite does not know. Local
+      # scratch data only; the droplet never loads this file.
+      POSTGRES_PASSWORD: devpassword
     ports:
       - "127.0.0.1:5432:5432"
+    volumes:
+      # Its own volume, not the production `pgdata`. POSTGRES_PASSWORD only
+      # takes effect at initdb, so sharing one volume means whichever compose
+      # invocation happened to create it decides the password forever — and a
+      # developer who ran plain `docker compose up -d db` once would then find
+      # the overlay's pin silently ineffective and the suite unable to connect,
+      # with nothing on screen explaining why.
+      - pgdata_dev:/var/lib/postgresql/data
+
+volumes:
+  pgdata_dev:
