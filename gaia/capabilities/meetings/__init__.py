@@ -35,7 +35,7 @@ SAVE_SCHEMA = {
                     "profile_update": {
                         "type": "string",
                         "description": "New facts about this person to merge into their "
-                                       "profile, which everyone at Gaia can read. "
+                                       "profile, which everyone at Gaia Group can read. "
                                        "Skipped when private is true: nothing learned in "
                                        "a private meeting is written to a shared profile.",
                     },
@@ -76,7 +76,7 @@ CAPABILITY = Capability(
     name="meetings",
     prompt_fragment=(
         "\nWhen you are asked to keep something off the company record, pass private: true "
-        "to save_meeting. Otherwise colleagues at Gaia can see it, which is the default.\n"
+        "to save_meeting. Otherwise colleagues at Gaia Group can see it, which is the default.\n"
         "A private meeting stays private end to end: its notes are excluded from "
         "company-wide search, and nothing learned in it is added to a person's shared "
         "contact profile, even if you pass profile_update. save_meeting tells you when it "

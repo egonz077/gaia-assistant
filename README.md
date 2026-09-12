@@ -1,6 +1,6 @@
 # gaia-butler
 
-A WhatsApp assistant for the developers at Gaia, a real-estate development company. Meeting
+A WhatsApp assistant for the developers at Gaia Group Development. Meeting
 notes go in — typed, or photographed handwriting — and structured summaries,
 contact profiles, a lead pipeline and a morning follow-up digest come out.
 

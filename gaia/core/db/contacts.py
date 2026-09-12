@@ -38,7 +38,7 @@ async def roster(conn, user: User, limit: int = 40) -> list[str]:
     the *company's* 40 most recently touched contacts. Ana's prompt then
     asserted, as fact, that she had recently worked with Sofia's clients, and
     the model acted on it: "how did it go with Rivera?" about someone she has
-    never met, in a brokerage where agents guard their books. A false premise
+    never met, in a firm where each developer runs their own deals. A false premise
     in a system prompt makes everything downstream of it confidently wrong.
 
     A contact is reachable from a user's own work in exactly two ways —

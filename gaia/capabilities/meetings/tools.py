@@ -93,7 +93,7 @@ async def save_meeting(conn, user: User, args: dict) -> dict:
         result["note"] = (
             "This meeting is private, so what you learned about "
             f"{', '.join(skipped)} was not added to the shared company profile, "
-            "which everyone at Gaia can read. It is saved in this private "
+            "which everyone at Gaia Group can read. It is saved in this private "
             f"meeting instead, where only {user.name} can reach it - "
             "search_memory will find it. Say so plainly."
         )
