@@ -19,7 +19,7 @@ async def create_user(
     *,
     name: str,
     wa_id: str,
-    role: str = "agent",
+    role: str = "developer",
     timezone: str = "America/New_York",
 ) -> User:
     cur = await conn.execute(

@@ -16,7 +16,7 @@ def test_parser_accepts_add_user():
 
 def test_parser_defaults_role_to_agent():
     args = build_parser().parse_args(["add-user", "--name", "Ana", "--phone", "1305"])
-    assert args.role == "agent"
+    assert args.role == "developer"
 
 
 def test_parser_accepts_deactivate():

@@ -1,10 +1,10 @@
 # gaia-butler
 
-A WhatsApp assistant for the agents at Gaia, a real-estate company. Meeting
+A WhatsApp assistant for the developers at Gaia, a real-estate development company. Meeting
 notes go in — typed, or photographed handwriting — and structured summaries,
 contact profiles, a lead pipeline and a morning follow-up digest come out.
 
-It is **multi-tenant within one company**: every agent on the roster uses the
+It is **multi-tenant within one company**: every developer on the roster uses the
 same WhatsApp number, and the assistant knows who is texting. Data is visible
 company-wide by default and private only when its owner says so. It holds a real
 client book — names, budgets, and what sellers said in confidence — which is why
@@ -110,7 +110,7 @@ The Cloud API has a **24-hour customer service window**: free-form messages are
 only accepted within 24 hours of the user's last inbound message. Outside it the
 digest falls back to an approved template, which is why the `daily_digest`
 template is a deployment prerequisite and not a nice-to-have — a
-newly-onboarded agent who has not texted the number yet has no open window at
+newly-onboarded developer who has not texted the number yet has no open window at
 all, so their first digest has no other path to delivery.
 
 ## Design documents

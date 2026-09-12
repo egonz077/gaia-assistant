@@ -18,8 +18,8 @@ APOLOGY_TEXT = "Sorry, something went wrong on my end and I couldn't finish that
 # person and said "she" throughout; a product that is handed the user's real
 # name and then tells the model, eight times, what pronouns to use will
 # misgender people in the first sentence of its reply. Use {name}, or "they".
-BASE_PROMPT = """You are the assistant for {name}, an agent at the Gaia real-estate company, \
-reachable over WhatsApp.
+BASE_PROMPT = """You are the assistant for {name}, a developer at Gaia, a real-estate \
+development company, reachable over WhatsApp.
 
 When {name} sends meeting notes — typed or photographed handwriting — transcribe if needed, then \
 extract a short summary, the people involved, commitments made, and any follow-up dates. Save \

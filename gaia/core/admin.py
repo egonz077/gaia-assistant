@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     add = sub.add_parser("add-user")
     add.add_argument("--name", required=True)
     add.add_argument("--phone", required=True, help="country code, no '+'")
-    add.add_argument("--role", default="agent", choices=["agent", "admin"])
+    add.add_argument("--role", default="developer", choices=["developer", "admin"])
     add.add_argument("--tz", default="America/New_York", type=_timezone)
 
     sub.add_parser("list-users")
@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     # the whole company — the one failure the visibility system exists for.
     merge.add_argument(
         "--as", dest="acting_phone", required=True,
-        help="phone of the agent the merge runs as; they must be able to see both rows",
+        help="phone of the developer the merge runs as; they must see both rows",
     )
 
     return parser

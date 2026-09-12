@@ -35,7 +35,7 @@ SAVE_SCHEMA = {
                     "profile_update": {
                         "type": "string",
                         "description": "New facts about this person to merge into their "
-                                       "profile, which every agent at Gaia can read. "
+                                       "profile, which everyone at Gaia can read. "
                                        "Skipped when private is true: nothing learned in "
                                        "a private meeting is written to a shared profile.",
                     },

@@ -7,7 +7,7 @@ async def test_create_and_look_up_by_wa_id(conn):
     assert found is not None
     assert found.id == created.id
     assert found.name == "Ana"
-    assert found.role == "agent"
+    assert found.role == "developer"
     assert found.timezone == "America/New_York"
 
 

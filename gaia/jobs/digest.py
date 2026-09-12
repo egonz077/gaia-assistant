@@ -23,8 +23,8 @@ log = logging.getLogger("gaia.digest")
 SEND_HOUR = 8
 WINDOW_HOURS = 24
 
-SYSTEM = """Write a short, warm morning WhatsApp message for a real-estate agent listing what \
-needs follow-up today. Group by person. Plain text, no markdown, no bullet characters.
+SYSTEM = """Write a short, warm morning WhatsApp message for a real-estate developer listing \
+what needs follow-up today. Group by person. Plain text, no markdown, no bullet characters.
 
 Each item carries a nudge_count: how many mornings it has already appeared without being acted \
 on. Vary the wording accordingly — 0 is new, 1-2 should note it is still open, and 3 or more \
