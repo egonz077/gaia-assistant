@@ -11,6 +11,13 @@ async def save(
     *,
     summary: str,
     source: str,
+    # Deliberately write-only for now: nothing in gaia/ selects raw_input, and
+    # there is no read path on this table at all. Kept anyway — it is the only
+    # copy of what was actually filed. The photo itself is not stored, so a
+    # transcription dropped here cannot be re-derived from anything, whereas a
+    # reader can be added the day a meetings list or "show me my original
+    # notes" exists. Protected by the row's `visibility` like every other
+    # column, so keeping it widens nothing (tests/test_isolation.py).
     raw_input: str | None = None,
     happened_at: datetime | None = None,
     visibility: str = "org",
