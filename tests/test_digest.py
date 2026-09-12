@@ -125,3 +125,43 @@ async def test_one_unusable_user_does_not_cost_everyone_else_their_digest(conn, 
     due = await digest.due_users(conn, datetime(2026, 9, 8, 18, tzinfo=timezone.utc))
 
     assert [u.id for u in due] == [sofia.id]
+
+
+async def test_a_user_added_after_8am_is_not_due_until_the_next_morning(conn, ana):
+    """`last_digest_on` NULL used to mean "due right now" at any hour past
+    08:00, so a user added at lunchtime got a digest minutes later — built
+    from leads created moments earlier, and marking them nudged, so the next
+    real digest called them "still open from yesterday"."""
+    await conn.execute(
+        "UPDATE users SET created_at = %s WHERE id = %s",
+        (datetime(2026, 9, 12, 18, 42, tzinfo=timezone.utc), ana.id),  # 14:42 ET
+    )
+
+    due = await digest.due_users(conn, datetime(2026, 9, 12, 19, 0, tzinfo=timezone.utc))
+
+    assert due == []
+
+
+async def test_that_same_user_is_due_the_following_morning(conn, ana):
+    await conn.execute(
+        "UPDATE users SET created_at = %s WHERE id = %s",
+        (datetime(2026, 9, 12, 18, 42, tzinfo=timezone.utc), ana.id),
+    )
+
+    due = await digest.due_users(conn, datetime(2026, 9, 13, 12, 5, tzinfo=timezone.utc))
+
+    assert [u.id for u in due] == [ana.id]
+
+
+async def test_an_older_user_who_missed_8am_is_still_caught_up_later_that_day(conn, ana):
+    """The retry path `send_digest` depends on: a send that failed at 08:00,
+    or a jobs container down across that hour, must still go out on a later
+    tick. Only rows created *today* are held back."""
+    await conn.execute(
+        "UPDATE users SET created_at = %s WHERE id = %s",
+        (datetime(2026, 9, 10, 13, 0, tzinfo=timezone.utc), ana.id),
+    )
+
+    due = await digest.due_users(conn, datetime(2026, 9, 12, 16, 0, tzinfo=timezone.utc))
+
+    assert [u.id for u in due] == [ana.id]

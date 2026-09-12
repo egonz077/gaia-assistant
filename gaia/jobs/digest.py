@@ -52,11 +52,23 @@ async def due_users(conn, now_utc: datetime | None = None) -> list[User]:
             if local.hour < SEND_HOUR:
                 continue
             cur = await conn.execute(
-                "SELECT last_digest_on FROM users WHERE id = %s", (user.id,)
+                "SELECT last_digest_on, created_at FROM users WHERE id = %s", (user.id,)
             )
-            last = (await cur.fetchone())["last_digest_on"]
-            if last == local.date():
+            row = await cur.fetchone()
+            if row["last_digest_on"] == local.date():
                 continue  # already sent today; a restart must not double-send
+            # A NULL `last_digest_on` means "no digest has ever been sent",
+            # which for a row created earlier today is not a missed morning —
+            # their 08:00 has not come round yet. Without this, adding a user
+            # at 14:42 sent them a digest at the next 15-minute tick, built
+            # from leads filed minutes earlier and marking them nudged, so the
+            # first real digest called brand-new items "still open". Rows from
+            # previous days keep the catch-up: a send that failed at 08:00, or
+            # a jobs container down across that hour, must still go out later
+            # (see the retry note in send_digest).
+            created_local = row["created_at"].astimezone(ZoneInfo(user.timezone))
+            if row["last_digest_on"] is None and created_local.date() == local.date():
+                continue
             out.append(user)
         except Exception:
             log.exception("skipping user %s while selecting digest recipients", user.id)
