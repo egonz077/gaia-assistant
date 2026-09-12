@@ -24,6 +24,15 @@ dev = ["pytest>=8.3", "pytest-asyncio>=0.24"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+markers = [
+    # Real Anthropic and Voyage calls against a real database. Billable, slower
+    # and subject to model variation, so they are deselected by default: plain
+    # `pytest` runs exactly the 181 hermetic tests it ran before this tier
+    # existed. Run them with `pytest -m live` — the second -m wins over the one
+    # in addopts below.
+    "live: hits real external services. Deselected by default; run with `-m live`.",
+]
+addopts = ["-m", "not live"]
 filterwarnings = [
     # Upstream-only: starlette.testclient's own import triggers this on the
     # anyio version we use. Nothing in our code touches BlockingPortal.

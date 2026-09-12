@@ -1,7 +1,9 @@
 """Live end-to-end smoke test against the real Anthropic API.
 
 Costs real money (a few cents). Not part of the pytest suite — nothing here is
-mocked except embeddings, because VOYAGE_API_KEY is not yet provisioned.
+mocked except embeddings, which are stubbed to keep this script's subject the
+model rather than the retrieval stack. Real Voyage calls are covered by
+tests/live/test_live_embeddings.py.
 
     .venv/bin/python -m evals.smoke
 
@@ -51,7 +53,10 @@ from gaia.core import llm  # noqa: E402
 
 
 async def fake_embed(texts, input_type="document"):
-    """VOYAGE_API_KEY is still a placeholder. Embeddings stay stubbed."""
+    """Stubbed on purpose: this script exists to exercise the model, and a
+    deterministic vector keeps a Voyage outage from failing a run that is
+    really about prompts and tool schemas. Real embeddings — and the
+    EMBED_DIM/vector(1024) agreement — are asserted in tests/live."""
     from gaia.core.embeddings import EMBED_DIM
     return [[0.1] + [0.0] * (EMBED_DIM - 1) for _ in texts]
 
