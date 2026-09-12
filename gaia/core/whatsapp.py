@@ -107,6 +107,22 @@ class WhatsAppClient:
                 return False
         return True
 
+    async def mark_read(self, message_id: str) -> bool:
+        """Blue ticks plus a typing bubble, in one call — the API offers no
+        way to show typing without also marking the message read.
+
+        Issued when the turn actually starts, not at the webhook: the receipt
+        then means "we have picked this up", not "a server received bytes".
+        The indicator clears on our reply or after 25 seconds, whichever
+        comes first, so a slow photo turn can outlive it.
+        """
+        return await self._post({
+            "messaging_product": "whatsapp",
+            "status": "read",
+            "message_id": message_id,
+            "typing_indicator": {"type": "text"},
+        })
+
     async def send_template(self, to: str, body: str) -> bool:
         """Used outside the 24-hour customer service window, where free-form
         messages are rejected."""

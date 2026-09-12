@@ -220,3 +220,27 @@ async def test_sends_report_whether_meta_accepted_them(monkeypatch):
 
     assert await client.send_text("13055550001", "hello") is False
     assert await client.send_template("13055550001", "hello") is False
+
+
+@pytest.mark.asyncio
+async def test_mark_read_sends_a_read_status_carrying_a_typing_indicator(monkeypatch):
+    """One call does both: WhatsApp has no way to show typing without also
+    marking the message read."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json={"success": True})
+
+    _stub_async_client(monkeypatch, handler)
+    client = whatsapp.WhatsAppClient(token="tok", phone_number_id="123")
+
+    assert await client.mark_read("wamid.in") is True
+
+    [request] = calls
+    assert request.url == f"{whatsapp.GRAPH}/123/messages"
+    body = json.loads(request.read())
+    assert body["messaging_product"] == "whatsapp"
+    assert body["status"] == "read"
+    assert body["message_id"] == "wamid.in"
+    assert body["typing_indicator"] == {"type": "text"}

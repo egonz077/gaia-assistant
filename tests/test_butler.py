@@ -331,3 +331,45 @@ def test_today_line_follows_the_users_timezone_across_midnight():
 
     assert today_line(instant.astimezone(ZoneInfo("America/New_York"))) == "Friday 2026-09-11"
     assert today_line(instant.astimezone(ZoneInfo("UTC"))) == "Saturday 2026-09-12"
+
+
+async def test_turn_marks_the_last_message_of_a_burst_read_before_replying(wa_user, monkeypatch):
+    """The receipt means "we have started on this", so it goes out when the
+    turn begins — not at the webhook, and not after the reply it is meant to
+    cover the wait for. One call is enough for the whole burst: marking a
+    message read marks the earlier ones in that conversation too."""
+    from tests.fakes import FakeWhatsApp
+
+    wa = FakeWhatsApp()
+    client = FakeAnthropic([FakeResponse([TextBlock("On it.")])])
+    _patch_anthropic(monkeypatch, client)
+
+    batch = [
+        {"id": "wamid.1", "type": "text", "text": "notes from the Rivera walkthrough"},
+        {"id": "wamid.2", "type": "text", "text": "oh and book Tuesday"},
+    ]
+    await _receive(wa_user, batch)
+    await handle_turn(wa_user, batch, wa)
+
+    assert wa.marked_read == ["wamid.2"]
+    assert [name for name, _ in wa.calls] == ["mark_read", "send_text"]
+
+
+async def test_a_failing_typing_indicator_does_not_cost_the_reply(wa_user, monkeypatch):
+    """Cosmetic. A Graph API blip on the read receipt must not degrade into
+    the apology path and lose the turn."""
+    from tests.fakes import FakeWhatsApp
+
+    class _ReadFails(FakeWhatsApp):
+        async def mark_read(self, message_id: str) -> bool:
+            raise RuntimeError("graph api blip")
+
+    wa = _ReadFails()
+    client = FakeAnthropic([FakeResponse([TextBlock("Got it.")])])
+    _patch_anthropic(monkeypatch, client)
+
+    batch = [{"id": "wamid.1", "type": "text", "text": "hello"}]
+    await _receive(wa_user, batch)
+    await handle_turn(wa_user, batch, wa)
+
+    assert wa.sent == [(wa_user.wa_id, "Got it.")]

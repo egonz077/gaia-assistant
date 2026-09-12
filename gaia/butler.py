@@ -221,6 +221,14 @@ async def handle_turn(user: User, batch: list[dict], wa) -> None:
     apology asking her to resend, rather than the turn queue's own bare
     log-and-swallow leaving her with silence.
     """
+    # Blue ticks and a typing bubble, in one call, as the turn starts. It is
+    # cosmetic, and its own try/except: a Graph API blip here must not fall
+    # into the apology path below and cost her the reply.
+    try:
+        await wa.mark_read(batch[-1]["id"])
+    except Exception:
+        log.exception("could not mark read for user %s", user.id)
+
     try:
         async with tx() as conn:
             blocks, wa_ids = await _build_blocks(conn, user, batch, wa)

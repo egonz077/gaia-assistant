@@ -50,11 +50,21 @@ class FakeWhatsApp:
         # media_ids in here raise instead of "downloading" — simulates a
         # single bad photo in a burst without touching real media.
         self._media_errors = media_errors or set()
+        # Every outbound call in order, so a test can assert that the typing
+        # indicator goes out *before* the reply rather than merely alongside it.
+        self.calls: list[tuple[str, str]] = []
+        self.marked_read: list[str] = []
+
+    async def mark_read(self, message_id: str) -> bool:
+        self.marked_read.append(message_id)
+        self.calls.append(("mark_read", message_id))
+        return True
 
     async def send_text(self, to: str, body: str) -> bool:
         if self.reject_sends:
             return False
         self.sent.append((to, body))
+        self.calls.append(("send_text", body))
         return True
 
     async def send_template(self, to: str, body: str) -> bool:
