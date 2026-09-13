@@ -57,7 +57,15 @@ SAVE_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "description": {"type": "string"},
-                    "due_at": {"type": "string", "description": "ISO 8601, optional"},
+                    "due_at": {
+                        "type": "string",
+                        "description": "ISO 8601, optional. Only when the note states a date "
+                                       "or implies one ('check in one week', 'by Friday'). "
+                                       "Never choose a date the note does not support: save "
+                                       "the commitment without one and ask if the timing "
+                                       "matters. A due date puts this in the morning digest "
+                                       "and starts nudging on a day nobody picked.",
+                    },
                     "contact_name": {"type": "string"},
                 },
                 "required": ["description"],
