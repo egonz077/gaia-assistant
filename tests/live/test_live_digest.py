@@ -53,15 +53,31 @@ def _zone_past_send_hour() -> str:
 
 
 async def _seed_agent(pool, *, name, wa_id, zone, inbound_hours_ago):
-    """An agent with one overdue lead and one open commitment.
+    """An agent on an ordinary morning: on the roster since before today, with
+    one overdue lead and one open commitment.
 
     inbound_hours_ago=None leaves last_inbound_at NULL, which _within_window
     treats as outside the 24-hour service window — the template path.
+
+    `created_at` is backdated, and that is load-bearing rather than tidiness.
+    due_users holds back a row created earlier the same day — their 08:00 has
+    not come round yet — so a user created by this helper a millisecond ago is
+    never selected, and every test in this file silently asserted against an
+    empty digest run. An agent whose first morning has already passed is also
+    simply what these tests mean by "an agent": the first-day case has its own
+    coverage in tests/test_digest.py.
+
+    Two days rather than one so the backdate cannot land on today's local date
+    in any of CANDIDATE_ZONES, which span 25 hours of offsets.
     """
     from gaia.core.db import users as users_db
 
     async with tx(pool) as conn:
         user = await users_db.create_user(conn, name=name, wa_id=wa_id, timezone=zone)
+        await conn.execute(
+            "UPDATE users SET created_at = now() - interval '2 days' WHERE id = %s",
+            (user.id,),
+        )
 
         cur = await conn.execute(
             """INSERT INTO contacts (user_id, visibility, name)
