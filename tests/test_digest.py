@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta, timezone
 
 from gaia.core.db import leads as leads_db
@@ -165,3 +166,56 @@ async def test_an_older_user_who_missed_8am_is_still_caught_up_later_that_day(co
     due = await digest.due_users(conn, datetime(2026, 9, 12, 16, 0, tzinfo=timezone.utc))
 
     assert [u.id for u in due] == [ana.id]
+
+
+async def test_the_composer_uses_the_digest_model_not_the_butlers(conn, ana):
+    """The digest is one short paragraph written from a ~300-token JSON payload:
+    no tools, no images, nothing to reason about. It must not silently ride on
+    whatever the agent loop is set to — that is what made it cost Opus rates for
+    a task Opus was not doing anything with."""
+    from gaia.core.config import settings
+
+    await users_db.touch_inbound(conn, ana)
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+    await leads_db.create(
+        conn, ana, contact_name="Maria", description="Buying", next_action_at=past
+    )
+    client = FakeAnthropic([FakeResponse([TextBlock("Morning!")])])
+
+    await digest.send_digest(conn, client, FakeWhatsApp(), ana)
+
+    assert client.requests[0]["model"] == settings.digest_model
+    assert settings.digest_model != settings.model, (
+        "the split is pointless if both settings hold the same value by default"
+    )
+
+
+async def test_the_due_time_reaches_the_prompt_and_the_prompt_asks_for_it(conn, ana):
+    """A commitment due at 5pm is only actionable if the message says 5pm.
+
+    The payload has always carried the timestamp; nothing asked the model to
+    use it, and on a cheaper model that is the difference between "call the
+    attorney, due by 5pm today" and "call the attorney". Opus spent its own
+    judgement filling the gap in — which is a bad reason to pay Opus rates."""
+    from gaia.core.db import meetings as meetings_db
+
+    await users_db.touch_inbound(conn, ana)
+    due = datetime.now(timezone.utc) + timedelta(hours=5)
+    await meetings_db.save(
+        conn, ana, summary="Okonkwo title", source="text",
+        commitments=[{"description": "Call the closing attorney", "due_at": due}],
+    )
+    client = FakeAnthropic([FakeResponse([TextBlock("Morning!")])])
+
+    await digest.send_digest(conn, client, FakeWhatsApp(), ana)
+
+    # Compared as an instant, not as rendered text: `due_at` is timestamptz and
+    # comes back in the session's timezone (America/New_York on the compose db
+    # service), so a substring match against a UTC isoformat disagrees with
+    # itself by four hours. Same trap as test_meetings.py.
+    sent = re.search(r"'due': '([^']+)'", str(client.requests[0]["messages"]))
+    assert sent, "the due timestamp never reached the model"
+    assert datetime.fromisoformat(sent.group(1)) == due
+    assert "due" in client.requests[0]["system"].lower(), (
+        "nothing in the system prompt tells the model to name the deadline"
+    )

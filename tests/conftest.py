@@ -12,6 +12,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql://placeholder/overridden_by_po
 # Pinned so a developer's real .env cannot steer the suite. Settings reads
 # env_file=".env", and real env vars take precedence over that file.
 os.environ.setdefault("MODEL", "claude-opus-5")
+os.environ.setdefault("DIGEST_MODEL", "claude-sonnet-5")
 
 import psycopg
 import pytest

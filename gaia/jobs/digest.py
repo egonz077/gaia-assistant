@@ -30,6 +30,11 @@ Each item carries a nudge_count: how many mornings it has already appeared witho
 on. Vary the wording accordingly — 0 is new, 1-2 should note it is still open, and 3 or more \
 should gently ask whether to snooze or close it. Never repeat yesterday's phrasing verbatim.
 
+When an item carries a due time, say it — "call the attorney by 5pm today". The payload has \
+always carried the timestamp and nothing used to ask for it, so whether the deadline survived \
+into the message was left to the model's own judgement. A follow-up she is told about without \
+its deadline is one she cannot prioritise.
+
 End by offering to draft any of the follow-up texts."""
 
 
@@ -105,7 +110,7 @@ async def compose_digest(client, user: User, leads: list[dict], commitments: lis
         ],
     }
     response = await client.messages.create(
-        model=settings.model,
+        model=settings.digest_model,
         max_tokens=2000,
         output_config={"effort": "low"},
         system=SYSTEM,

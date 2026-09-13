@@ -184,3 +184,17 @@ async def test_does_not_mutate_the_callers_messages_list_with_tool_use(ana, migr
     before = list(messages)
     await run_agent(client, migrated, ana, messages, "sys", [], registry=reg)
     assert messages == before
+
+
+async def test_the_agent_loop_uses_the_butlers_model(pool, ana):
+    """The other half of the split. The butler transcribes photographed
+    handwriting, picks tools and does date arithmetic — it stays on the
+    expensive model, and a change to the digest's setting must never drag it
+    down with it."""
+    from gaia.core.config import settings
+
+    client = FakeAnthropic([FakeResponse([TextBlock("ok")])])
+
+    await run_agent(client, pool, ana, [{"role": "user", "content": "hi"}], "sys", [])
+
+    assert client.requests[0]["model"] == settings.model
