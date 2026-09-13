@@ -74,7 +74,27 @@ end for this — Meta will not deliver OTP short codes to VoIP numbers, and voic
 verification stalled on an unroutable number. A postpaid mobile line on the
 company account is the path.
 
-## 4 · `meetings` has no read path
+## 4 · Contact profiles are append-only
+
+**Status:** designed and approved, implementation plan not written yet.
+**Spec:** `specs/2026-09-12-profile-consolidation-design.md`
+
+`merge_profile` (`core/db/contacts.py:141`) concatenates with `' | '` and trims
+from the front at 4000 characters. Nothing retires a superseded fact, so Diego
+Ojeda's profile opens with `At Rilea.` — false since he moved to Related — and
+nothing records which meeting contributed which sentence.
+
+`c0d9990` narrowed what gets written (durable identity, not events); this is the
+other half, how those facts are combined. Carries a `meeting_contacts.note`
+column that keeps the per-contact fact the model already generates, a
+`profile_versions` audit table, `contacts.consolidated_at`, and a nightly org-wide
+job beside the digest.
+
+The privacy rule is the part to get right: the consolidation query must filter on
+`meetings.visibility = 'org'` literally, never `visible()`, which also admits rows
+owned by a scope user. The spec asks for that test to be written first.
+
+## 5 · `meetings` has no read path
 
 **Status:** accepted for now, deliberately.
 **Recorded in:** `gaia/core/db/meetings.py:14`
