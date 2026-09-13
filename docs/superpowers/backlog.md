@@ -206,3 +206,24 @@ exceeded.
   limits beyond TIER_250 and unlocks display-name review.
 - **The system user token lacks `business_management`**, so enumerating WABAs
   needs the Graph API Explorer. Only matters for administration.
+
+## 11 · Nothing measures what this costs or whether caching works
+
+**Status:** designed and approved, implementation plan not written yet.
+**Spec:** `specs/2026-09-12-observability-design.md`
+
+`response.usage` comes back on every call at `core/llm.py:65` and
+`jobs/digest.py:107` and is discarded. There is no record of spend by day, job or
+developer, and no measurement of the cache design in `_system_blocks`
+(`core/llm.py:15`) — whose docstring makes a specific claim about this workload
+("costs more than not caching") that has never been checked against a real
+`cache_read_input_tokens` figure.
+
+Carries an `llm_calls` table (counts only, no prompt text), a `record` helper
+called from three sites, and a `stats` subcommand that emits a self-contained
+HTML page over stdout, so `ssh gaia '...' > report.html` is the whole workflow.
+
+Product counts — meetings filed, contacts per meeting, commitments with a due
+date — are deliberately *not* stored: they are already queryable, and a second
+copy would drift.
+
