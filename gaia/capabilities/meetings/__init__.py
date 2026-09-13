@@ -34,10 +34,18 @@ SAVE_SCHEMA = {
                     "name": {"type": "string"},
                     "profile_update": {
                         "type": "string",
-                        "description": "New facts about this person to merge into their "
-                                       "profile, which everyone at Gaia Group can read. "
-                                       "Skipped when private is true: nothing learned in "
-                                       "a private meeting is written to a shared profile.",
+                        "description": "Durable facts about who this person is and why Gaia "
+                                       "Group would want to meet them: their organization, "
+                                       "role, what they build or buy, what they are looking "
+                                       "for, how you know them. Everyone at Gaia Group can "
+                                       "read it. Not events, dates or arrangements - 'wants "
+                                       "lunch', 'emailed 9/8/26', 'Zoom set up by Dan' belong "
+                                       "to the meeting and its commitments, which are dated "
+                                       "and searchable; a profile is not. Omit this field when "
+                                       "a meeting taught you nothing durable about the person, "
+                                       "which is often. Skipped when private is true: nothing "
+                                       "learned in a private meeting is written to a shared "
+                                       "profile.",
                     },
                 },
                 "required": ["name"],
@@ -81,6 +89,9 @@ CAPABILITY = Capability(
         "company-wide search, and nothing learned in it is added to a person's shared "
         "contact profile, even if you pass profile_update. save_meeting tells you when it "
         "skipped one - say so plainly rather than implying it was filed on their profile.\n"
+        "A contact profile answers who someone is and why you would take a meeting with "
+        "them, not what happened. Leave profile_update out unless the meeting taught you "
+        "something that will still be true next year.\n"
         "If an already-filed meeting should later be made private - or put back on the "
         "record - use set_meeting_visibility. This also hides (or restores) that meeting's "
         "notes in company-wide search.\n"
