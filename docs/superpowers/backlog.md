@@ -52,27 +52,22 @@ part of the vocabulary fix.
 `contacts`, `meetings`, `commitments` and `memory_chunks` all generalise fine —
 developers meet people and make promises like anyone.
 
-## 3 · The Graph API send has never executed
+## 3 · The Graph API send has never executed — RESOLVED 2026-09-12
 
-**Status:** blocked on a verified WhatsApp sender.
+**Status:** resolved. Kept as a record of what first contact actually proved.
 
-Every other edge in the system now has coverage against the real service: the
-model and its tool schemas, Postgres, Voyage embeddings, the private-visibility
-boundary, and the digest's selection and retry behaviour — 17 tests under
-`pytest -m live`.
+A postpaid mobile line was verified as a Cloud API sender (+1 305-790-6417,
+`CONNECTED` / `VERIFIED`, TIER_250), and both `send_text` and `send_template`
+have now run against Meta for real.
 
-`wa.send_text` and `wa.send_template` against Meta are the exception, by design:
-`tests/live/conftest.py::no_real_whatsapp` makes constructing a real client raise,
-so the live tier cannot text a developer by accident.
+What it took, none of which was the code: the WABA had to be subscribed to the
+app (`POST /{WABA_ID}/subscribed_apps`) — configuring the app's webhook callback
+is not the same registration, and without the second one Meta accepts inbound
+messages and delivers nothing. Zero `POST /webhook` requests ever reached the app
+before that call; app mode and business verification were both red herrings.
 
-First contact therefore validates `WA_ACCESS_TOKEN`, `WA_PHONE_NUMBER_ID` and the
-24-hour-window rules all at once. Worth one deliberate smoke send to a seeded
-number before a developer's real message is the first thing through.
-
-**Prerequisite:** a phone number verified as a Cloud API sender. Twilio is a dead
-end for this — Meta will not deliver OTP short codes to VoIP numbers, and voice
-verification stalled on an unroutable number. A postpaid mobile line on the
-company account is the path.
+`tests/live/conftest.py::no_real_whatsapp` stays as it is. The live tier still
+must not be able to text a developer by accident.
 
 ## 4 · Contact profiles are append-only
 
@@ -112,3 +107,102 @@ Indexing `raw_input` as a second chunk inheriting the parent's visibility would
 make it searchable; `memory_chunks` already supports several rows per
 `meeting_id`. Costs roughly double the Voyage volume and puts OCR noise into the
 ranking, so it is a product call rather than an obvious improvement.
+
+## 6 · Delete a meeting note
+
+**Status:** decided in conversation 2026-09-12, not specified.
+
+Nothing deletes today. The meetings capability has `save_meeting`,
+`search_memory`, `lookup_contact` and `set_meeting_visibility`.
+
+Decided: user-initiated only, never on a timer — `RETENTION_DAYS` stays long and
+nothing is automatically aged out of the live database. One confirmation,
+all-or-nothing, after a preview naming what goes ("the Sept 12 photo: 7
+commitments, 2 leads, profile notes on 3 people"). Itemised picking reads well in
+a spec and is miserable over WhatsApp, where every choice costs a round trip.
+
+Two things deliberately survive a delete, and the preview has to say so: the
+conversation log, because `messages` holds both her inbound text and the
+assistant's reply echoing the whole transcription, and purging it would silently
+edit a history she can still scroll on her phone; and `contacts.profile`, because
+deleting the note that revealed Tyler works at Two Roads should not unlearn that
+he works at Two Roads.
+
+Cheaper after §4 lands: `meeting_contacts` already cascades, so a note's
+contribution disappears with the meeting and the next consolidation pass
+regenerates the profile without it.
+
+**The trap:** `commitments.meeting_id` is `ON DELETE SET NULL` and `leads` never
+reference the meeting at all, so a naive `DELETE FROM meetings` leaves both alive
+and orphaned — still arriving in her 8am digest with nothing behind them.
+
+## 7 · Increment 2 — the calendar
+
+**Status:** scoped in `specs/2026-09-08-gaia-butler-design.md` §1; refined in
+conversation 2026-09-12; no spec of its own yet.
+
+New decisions, none of them in a document yet:
+
+- **Invites with attendees, approval-gated.** `BASE_PROMPT` says "Never contact
+  third parties", and a Google Calendar invite emails every attendee. The rule
+  becomes "never unprompted", with an explicit approval step showing the exact
+  address list before anything sends. A deleted event is recoverable; an
+  invitation to a client is not.
+- **Google Meet, not Teams.** Meet is one field on the event being created.
+  Gaia has no Microsoft 365 tenant, so a Teams link would mean a second OAuth
+  subsystem through Microsoft Graph — its own app registration, consent flow and
+  encrypted refresh tokens. Parked, not refused.
+- **`users` has no email column.** Binding a WhatsApp identity to the Google
+  account that authorised is a migration, and without it nothing verifies that the
+  account consenting is the person expected.
+- **The Internal-OAuth assumption needs confirming.** No Google verification
+  review only holds while every user is on Gaia's Workspace domain. One
+  contractor on a personal Gmail forces an External app — sensitive-scope review,
+  privacy policy, demo video — or a Testing-mode app capped at 100 users whose
+  tokens expire every 7 days.
+
+**Also missing:** attendee email addresses. `contacts.email` is nullable and
+almost entirely empty; the notes carry names. An invite needs an address, so the
+design has to say how Gaia asks for and remembers them without interrogating
+someone over every lunch.
+
+## 8 · The model cannot see a profile before it writes to it
+
+**Status:** identified; mitigated rather than fixed by §4.
+
+`save_meeting` never receives the contact's current `profile`, so the model
+restates what is already there — `At Two Roads.` beside `Head of acquisitions at
+Two Roads`. Consolidation cleans this up nightly, which is why it is a mitigation:
+the duplication is still written every time, it is just not permanent.
+
+Fixing it at the source costs a `lookup_contact` round trip per known contact per
+save, or a `merge_profile` that compares before appending. Neither is worth doing
+before a few weeks of consolidated profiles show whether the duplication still
+matters.
+
+## 9 · The typing indicator expires before a slow turn finishes
+
+**Status:** accepted, pending real numbers.
+
+Meta dismisses the indicator on the reply or after 25 seconds, whichever comes
+first (`core/whatsapp.py:110`, `mark_read`). A photo turn runs 10-30 seconds
+(`butler.py:205`), so the bubble can vanish while the model is still working —
+the silence the feature exists to remove, arriving slightly later.
+
+Re-issuing needs a timer running alongside the turn, cancelled on reply. Not
+worth it until logged turn durations say how often 25 seconds is actually
+exceeded.
+
+## 10 · Meta-side follow-ups
+
+**Status:** operational, not code. Recorded here because nothing else tracks them.
+
+- **`daily_digest` template** was submitted 2026-09-12 and is `PENDING`. Until it
+  is approved, any digest to someone who has not texted in 24 hours cannot be
+  delivered — `send_digest` falls through to `send_template` and Meta rejects it.
+- **The app is in Development mode.** Webhooks work regardless; Live needs a
+  Privacy Policy URL, which the app could serve itself from a `/privacy` route.
+- **Business verification is not started.** Not a blocker — it raises messaging
+  limits beyond TIER_250 and unlocks display-name review.
+- **The system user token lacks `business_management`**, so enumerating WABAs
+  needs the Graph API Explorer. Only matters for administration.
