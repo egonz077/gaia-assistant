@@ -39,6 +39,15 @@ async def update_lead(conn, user: User, args: dict) -> dict:
     }
 
 
-async def complete_commitment(conn, user: User, args: dict) -> dict:
-    done = await commitments_db.complete(conn, user, args["commitment_id"])
-    return {"completed": done}
+async def list_commitments(conn, user: User, args: dict) -> dict:
+    rows = await commitments_db.query(conn, user)
+    return {"commitments": rows}
+
+
+async def complete_commitments(conn, user: User, args: dict) -> dict:
+    ids = args.get("commitment_ids") or []
+    closed = await commitments_db.complete(conn, user, ids)
+    # Both numbers, always. "Closed 2" when three were asked for reads as
+    # success to a model that is not also told one did not land, and the
+    # difference is what the user needs to hear about.
+    return {"completed": len(closed), "not_found": len(ids) - len(closed)}

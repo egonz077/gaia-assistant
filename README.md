@@ -61,7 +61,8 @@ gaia/
     base.py            Capability, Tool, Registry
     meetings/          save_meeting, search_memory, lookup_contact,
                        set_meeting_visibility
-    leads/             create_lead, query_leads, update_lead, complete_commitment
+    leads/             create_lead, query_leads, update_lead,
+                       list_commitments, complete_commitments
   jobs/digest.py       per-user morning follow-up digest
 migrations/001_init.sql
 deploy/                backup.sh, restore.sh, compose.dev.yml, runbook
