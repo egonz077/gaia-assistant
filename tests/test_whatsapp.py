@@ -244,3 +244,92 @@ async def test_mark_read_sends_a_read_status_carrying_a_typing_indicator(monkeyp
     assert body["status"] == "read"
     assert body["message_id"] == "wamid.in"
     assert body["typing_indicator"] == {"type": "text"}
+
+
+def test_an_audio_message_is_parsed_rather_than_marked_unsupported():
+    """Before this, every voice note reached the model as the literal string
+    '[unsupported message type: audio]'."""
+    payload = {"entry": [{"changes": [{"value": {"messages": [{
+        "id": "wamid.1", "from": "13055550001", "type": "audio",
+        "audio": {"id": "1908647269898587", "mime_type": "audio/ogg; codecs=opus",
+                  "sha256": "abc=", "voice": True},
+    }]}}]}]}
+
+    assert whatsapp.parse_messages(payload) == [{
+        "id": "wamid.1", "from": "13055550001", "type": "audio",
+        "audio_id": "1908647269898587", "mime_type": "audio/ogg; codecs=opus",
+        "voice": True,
+    }]
+
+
+def test_an_uploaded_audio_file_parses_the_same_way():
+    """voice=False is a forwarded recording rather than the microphone button.
+    The same content by a different route, so it takes the same path — the flag
+    is recorded, not acted on."""
+    payload = {"entry": [{"changes": [{"value": {"messages": [{
+        "id": "wamid.2", "from": "13055550001", "type": "audio",
+        "audio": {"id": "999", "mime_type": "audio/mpeg", "voice": False},
+    }]}}]}]}
+
+    assert whatsapp.parse_messages(payload)[0]["voice"] is False
+
+
+def test_an_unknown_message_type_still_degrades_to_a_note():
+    """A sticker or a location is not a crash, it is a message the model can
+    explain. That fallback must survive the audio branch."""
+    payload = {"entry": [{"changes": [{"value": {"messages": [{
+        "id": "wamid.3", "from": "1", "type": "sticker", "sticker": {"id": "x"},
+    }]}}]}]}
+
+    assert "unsupported message type" in whatsapp.parse_messages(payload)[0]["text"]
+
+
+@pytest.mark.asyncio
+async def test_audio_is_returned_raw_and_never_reaches_pillow(monkeypatch):
+    """download_media downscales, which is Pillow. Audio bytes down that path
+    die inside Pillow rather than at a boundary — which is why fetching and
+    image processing were separated."""
+    def handler(request):
+        if request.url.path.endswith("media-1"):
+            return httpx.Response(200, json={
+                "url": "https://lookaside.example/blob",
+                "mime_type": "audio/ogg; codecs=opus",
+            })
+        return httpx.Response(200, content=b"OggS-raw-bytes")
+
+    _stub_async_client(monkeypatch, handler)
+    called = []
+    monkeypatch.setattr(
+        whatsapp, "downscale", lambda b: called.append(b) or ("image/jpeg", "x")
+    )
+
+    client = whatsapp.WhatsAppClient(token="t", phone_number_id="1")
+    content, mime_type = await client.download_audio("media-1")
+
+    assert content == b"OggS-raw-bytes", "audio must come back untouched"
+    assert mime_type == "audio/ogg; codecs=opus"
+    assert called == [], "downscale must not be called for audio"
+
+
+@pytest.mark.asyncio
+async def test_images_still_go_through_downscale(monkeypatch):
+    """The other half: separating fetch from processing must not have changed
+    the image path."""
+    def handler(request):
+        if request.url.path.endswith("media-2"):
+            return httpx.Response(200, json={
+                "url": "https://lookaside.example/blob", "mime_type": "image/jpeg",
+            })
+        return httpx.Response(200, content=b"jpeg-bytes")
+
+    _stub_async_client(monkeypatch, handler)
+    called = []
+    monkeypatch.setattr(
+        whatsapp, "downscale", lambda b: called.append(b) or ("image/jpeg", "ZmFrZQ==")
+    )
+
+    client = whatsapp.WhatsAppClient(token="t", phone_number_id="1")
+    out = await client.download_media("media-2")
+
+    assert called == [b"jpeg-bytes"]
+    assert out == {"media_type": "image/jpeg", "data": "ZmFrZQ=="}

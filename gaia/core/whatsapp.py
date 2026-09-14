@@ -38,6 +38,14 @@ def parse_messages(payload: dict) -> list[dict]:
                 elif m["type"] == "image":
                     base["image_id"] = m["image"]["id"]
                     base["caption"] = m["image"].get("caption")
+                elif m["type"] == "audio":
+                    base["audio_id"] = m["audio"]["id"]
+                    base["mime_type"] = m["audio"].get("mime_type", "audio/ogg")
+                    # True when recorded with WhatsApp's microphone button,
+                    # False for a forwarded audio file. Recorded because it is
+                    # free to keep and says what people actually do; not acted
+                    # on, because both are meeting notes.
+                    base["voice"] = m["audio"].get("voice", False)
                 else:
                     base["type"] = "text"
                     base["text"] = f"[unsupported message type: {m['type']}]"
@@ -142,13 +150,32 @@ class WhatsAppClient:
             },
         })
 
-    async def download_media(self, media_id: str) -> dict:
+    async def _fetch_media(self, media_id: str) -> tuple[str, bytes]:
+        """The two-step Graph fetch: metadata, then the bytes.
+
+        Deliberately knows nothing about what kind of media it is holding.
+        Fetching and image processing used to be one method, which meant audio
+        went through Pillow and died inside it rather than at a boundary.
+        """
         async with httpx.AsyncClient(timeout=30) as client:
             meta = (await client.get(f"{GRAPH}/{media_id}", headers=self._headers)).json()
             if "url" not in meta:
                 raise RuntimeError(f"no media url for {media_id}: {meta}")
             blob = await client.get(meta["url"], headers=self._headers)
             blob.raise_for_status()
+        return meta.get("mime_type", ""), blob.content
 
-        media_type, data = downscale(blob.content)
+    async def download_media(self, media_id: str) -> dict:
+        """An image, downscaled to the model's resolution ceiling."""
+        _, content = await self._fetch_media(media_id)
+        media_type, data = downscale(content)
         return {"media_type": media_type, "data": data}
+
+    async def download_audio(self, media_id: str) -> tuple[bytes, str]:
+        """Raw bytes and MIME type, untouched.
+
+        Deepgram accepts WhatsApp's OGG/Opus directly, so there is nothing to
+        transcode and no ffmpeg in the image.
+        """
+        mime_type, content = await self._fetch_media(media_id)
+        return content, mime_type or "audio/ogg"

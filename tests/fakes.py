@@ -84,6 +84,12 @@ class FakeWhatsApp:
         self.templates.append((to, body))
         return True
 
+    async def download_audio(self, media_id: str) -> tuple[bytes, str]:
+        self.downloaded.append(media_id)
+        if media_id in self._media_errors:
+            raise RuntimeError(f"could not download {media_id}")
+        return b"OggS-fake-audio-bytes", "audio/ogg; codecs=opus"
+
     async def download_media(self, media_id: str) -> dict:
         self.downloaded.append(media_id)
         if media_id in self._media_errors:
