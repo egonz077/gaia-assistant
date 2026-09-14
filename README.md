@@ -1,8 +1,9 @@
 # gaia-butler
 
 A WhatsApp assistant for the developers at Gaia Group Development. Meeting
-notes go in — typed, or photographed handwriting — and structured summaries,
-contact profiles, a lead pipeline and a morning follow-up digest come out.
+notes go in — typed, photographed handwriting, or dictated on the walk to the
+car — and structured summaries, contact profiles, a lead pipeline and a morning
+follow-up digest come out.
 
 It is **multi-tenant within one company**: every developer on the roster uses the
 same WhatsApp number, and the assistant knows who is texting. Data is visible
@@ -11,10 +12,16 @@ client book — names, budgets, and what sellers said in confidence — which is
 that distinction is the thing the codebase is most careful about.
 
 ```
-WhatsApp ──webhook──▶ FastAPI ──▶ Claude (tools) ──▶ Postgres + pgvector
-    ▲                                                       │
-    └────── per-user morning digest (jobs/digest.py) ◀───────┘
+                    photo ──▶ downscale ─┐
+WhatsApp ──webhook──▶ FastAPI            ├──▶ Claude (tools) ──▶ Postgres + pgvector
+    ▲               voice ──▶ Deepgram ──┘         │                    │
+    │                                              └──▶ Voyage ─────────┤
+    └────── per-user morning digest (jobs/digest.py) ◀───────────────────┘
 ```
+
+Claude accepts no audio input, so a voice note is transcribed before the model
+sees it — with the sender's contact roster passed as keyterms, because general
+English is solved and rare client names are not.
 
 ## The two rules everything follows
 
@@ -48,9 +55,14 @@ gaia/
     whatsapp.py        Cloud API: parse, send_text, send_template, media
     images.py          downscale photos to the model's resolution ceiling
     llm.py             agent loop, prompt caching, stop-reason handling
+    turns.py           per-user turn queue with a 3s debounce
     embeddings.py      Voyage embeddings
     transcription.py   Deepgram: voice notes to text, roster as keyterms
-    admin.py           CLI: add-user, list-users, deactivate, merge-contacts
+    usage.py           one model_calls row per model call; never raises
+    stats.py           cost priced on read, product counts derived on read
+    stats_html.py      the same numbers as one self-contained page
+    admin.py           CLI: add-user, list-users, deactivate, merge-contacts,
+                       stats
     db/
       pool.py          psycopg async pool, tx() context manager
       scope.py         visible() — the one place read-filtering lives
@@ -62,10 +74,11 @@ gaia/
     base.py            Capability, Tool, Registry
     meetings/          save_meeting, search_memory, lookup_contact,
                        set_meeting_visibility
-    leads/             create_lead, query_leads, update_lead,
-                       list_commitments, complete_commitments
+    leads/             create_lead, query_leads, update_lead, list_commitments,
+                       complete_commitments, update_commitment
   jobs/digest.py       per-user morning follow-up digest
-migrations/001_init.sql
+migrations/             001_init, 002_developer_role, 003_llm_calls,
+                        004_model_calls, 005_voice_note_source
 deploy/                backup.sh, restore.sh, compose.dev.yml, runbook
 evals/smoke.py         live end-to-end check against the real Anthropic API
 tests/
@@ -95,16 +108,44 @@ Tests run against `pgvector/pgvector:pg17`, the exact production image, and drop
 and recreate a per-process database each test. pgvector behaviour is
 load-bearing here and is not worth faking.
 
-The isolation suite is parametrized over `DOMAIN_TABLES` and a second test
-introspects `information_schema`, so adding a table with a `visibility` column
-and no coverage breaks the build rather than passing quietly.
+There is a second tier that real services back, deselected by default because
+it is billable:
 
-## Deployment
+```bash
+.venv/bin/python -m pytest -m live -q    # real Anthropic, Voyage and Deepgram
+```
 
-See **[deploy/README.md](deploy/README.md)** — DigitalOcean droplet, Caddy for
-TLS, the Meta setup including the `daily_digest` template, nightly off-box
-backups, and the restore drill. Run the restore drill before going live; an
-untested backup is not a backup.
+Run it before deploying anything that touches a model call. It has been left
+silently red for a day before, because plain `pytest` stayed green.
+
+Several tests exist to fail on carelessness rather than to check a feature.
+The isolation suite is parametrized over `DOMAIN_TABLES`; another introspects
+`information_schema`, so a new table with a `visibility` column and no coverage
+breaks the build; a third requires every read in `gaia/core/db/` to compose
+`visible()` or say in writing why it does not. That last one is the guard that
+matters — SQL injection is not a risk here, since psycopg parameterises every
+value, but a new read that quietly returns a colleague's client is.
+
+## Running it
+
+**[docs/RUNBOOK.md](docs/RUNBOOK.md)** is the operator's document: the stack,
+what every credential is for and what it costs if it leaks, the droplet, the
+admin CLI, and the traps that have already cost someone a day.
+
+**[deploy/README.md](deploy/README.md)** covers first-time setup — DigitalOcean
+droplet, Caddy for TLS, the Meta onboarding including the `daily_digest`
+template, nightly off-box backups, and the restore drill. Run the restore drill
+before going live; an untested backup is not a backup.
+
+What the product costs to run, and what it produced for the money:
+
+```bash
+docker compose exec -T app python -m gaia.core.admin stats --days 7
+```
+
+Every model call writes a row. Cost is computed when the report is read, from a
+rate card in `gaia/core/stats.py`, so editing that dict reprices history rather
+than leaving old rows quietly wrong.
 
 ## Notes on WhatsApp
 
@@ -117,19 +158,29 @@ all, so their first digest has no other path to delivery.
 
 ## Design documents
 
-- Spec: `docs/superpowers/specs/2026-09-08-gaia-butler-design.md`
-- Plan: `docs/superpowers/plans/2026-09-08-gaia-butler-increment-1.md`
+One design document per feature, carrying the reasoning and the options that
+were rejected. Read the relevant one before changing that feature.
+
+| | |
+|---|---|
+| `CLAUDE.md` | Orientation: the invariants, the tripwires, where everything lives. |
+| `docs/superpowers/specs/` | Designs — the original increment, observability, voice notes, and two not yet built. |
+| `docs/superpowers/plans/` | Implementation plans, task by task. |
+| `docs/superpowers/research/` | Findings behind a spec, including why Claude cannot take audio. |
+| `docs/superpowers/backlog.md` | Decided but unbuilt, with the reasoning. |
+
+The git history is part of this. Commit messages carry what broke, what it
+cost, and why this fix rather than the obvious one — more than once they have
+been the fastest route to a diagnosis.
 
 ## Next
 
 Increment 2 is the scheduler: Google Calendar, proposing free times, creating
 events on confirmation, and surfacing conflicts in the digest. Split out rather
 than deferred, because its schedule depends on Google project setup rather than
-on us. Also queued: a consolidation pass that rewrites `contacts.profile` into
-clean prose instead of the append-only accretion it is today.
+on us.
 
-Voice notes have landed. A developer can dictate their notes walking out of a
-meeting and they are filed like any other. Claude accepts no audio input, so
-they are transcribed first — Deepgram Nova-3, with the sender's contact roster
-sent as keyterms, because general English is solved and rare client names are
-not. See `docs/superpowers/specs/2026-09-13-voice-notes-design.md`.
+Also specified and unbuilt: a consolidation pass that rewrites
+`contacts.profile` into clean prose instead of the append-only accretion it is
+today, and an onboarding interview for new developers. Both have design
+documents.
