@@ -7,14 +7,14 @@ from gaia.jobs import digest
 from tests.fakes import FakeAnthropic, FakeResponse, FakeWhatsApp, TextBlock
 
 
-async def test_quiet_day_sends_nothing(conn, ana):
+async def test_quiet_day_sends_nothing(conn, ana, migrated):
     wa = FakeWhatsApp()
-    sent = await digest.send_digest(conn, FakeAnthropic([]), wa, ana)
+    sent = await digest.send_digest(conn, FakeAnthropic([]), wa, ana, pool=migrated)
     assert sent is False
     assert wa.sent == []
 
 
-async def test_due_lead_produces_a_message(conn, ana):
+async def test_due_lead_produces_a_message(conn, ana, migrated):
     # A recent inbound message opens the 24h customer service window, so the
     # free-form send_text path is used rather than the template.
     await users_db.touch_inbound(conn, ana)
@@ -26,22 +26,22 @@ async def test_due_lead_produces_a_message(conn, ana):
     wa = FakeWhatsApp()
     client = FakeAnthropic([FakeResponse([TextBlock("Morning! Maria Delgado is due.")])])
 
-    assert await digest.send_digest(conn, client, wa, ana) is True
+    assert await digest.send_digest(conn, client, wa, ana, pool=migrated) is True
     assert wa.sent[0][0] == ana.wa_id
     assert "Maria" in wa.sent[0][1]
     assert wa.templates == []
 
 
-async def test_digest_excludes_a_colleagues_due_lead(conn, ana, sofia):
+async def test_digest_excludes_a_colleagues_due_lead(conn, ana, sofia, migrated):
     past = datetime.now(timezone.utc) - timedelta(days=1)
     await leads_db.create(
         conn, sofia, contact_name="Rivera", description="Selling", next_action_at=past
     )
     wa = FakeWhatsApp()
-    assert await digest.send_digest(conn, FakeAnthropic([]), wa, ana) is False
+    assert await digest.send_digest(conn, FakeAnthropic([]), wa, ana, pool=migrated) is False
 
 
-async def test_nudge_count_increments_and_reaches_the_prompt(conn, ana):
+async def test_nudge_count_increments_and_reaches_the_prompt(conn, ana, migrated):
     past = datetime.now(timezone.utc) - timedelta(days=1)
     await leads_db.create(
         conn, ana, contact_name="Maria", description="Buying", next_action_at=past
@@ -49,16 +49,16 @@ async def test_nudge_count_increments_and_reaches_the_prompt(conn, ana):
     wa = FakeWhatsApp()
 
     client = FakeAnthropic([FakeResponse([TextBlock("first")])])
-    await digest.send_digest(conn, client, wa, ana)
+    await digest.send_digest(conn, client, wa, ana, pool=migrated)
 
     client2 = FakeAnthropic([FakeResponse([TextBlock("second")])])
-    await digest.send_digest(conn, client2, wa, ana)
+    await digest.send_digest(conn, client2, wa, ana, pool=migrated)
 
     prompt = str(client2.requests[0]["messages"])
     assert "nudge_count" in prompt and "1" in prompt
 
 
-async def test_outside_the_window_a_template_is_used(conn, ana):
+async def test_outside_the_window_a_template_is_used(conn, ana, migrated):
     past = datetime.now(timezone.utc) - timedelta(days=1)
     await leads_db.create(
         conn, ana, contact_name="Maria", description="Buying", next_action_at=past
@@ -70,11 +70,11 @@ async def test_outside_the_window_a_template_is_used(conn, ana):
     wa = FakeWhatsApp()
     client = FakeAnthropic([FakeResponse([TextBlock("Morning!")])])
 
-    await digest.send_digest(conn, client, wa, ana)
+    await digest.send_digest(conn, client, wa, ana, pool=migrated)
     assert wa.sent == [] and len(wa.templates) == 1
 
 
-async def test_never_messaged_a_template_is_used(conn, ana):
+async def test_never_messaged_a_template_is_used(conn, ana, migrated):
     """The newly-onboarded case: an admin adds the user via the CLI and she
     has not texted the number yet, so `last_inbound_at` is NULL. No inbound
     message means no open customer-service window at all — not an unknown
@@ -87,11 +87,11 @@ async def test_never_messaged_a_template_is_used(conn, ana):
     wa = FakeWhatsApp()
     client = FakeAnthropic([FakeResponse([TextBlock("Morning!")])])
 
-    await digest.send_digest(conn, client, wa, ana)
+    await digest.send_digest(conn, client, wa, ana, pool=migrated)
     assert wa.sent == [] and len(wa.templates) == 1
 
 
-async def test_a_rejected_send_records_nothing(conn, ana):
+async def test_a_rejected_send_records_nothing(conn, ana, migrated):
     """A rejected template, an expired token or a rate limit used to leave
     nudge counts incremented, the digest logged into her thread as though she
     had read it, and last_digest_on set so today would not be retried. She
@@ -105,7 +105,7 @@ async def test_a_rejected_send_records_nothing(conn, ana):
     wa = FakeWhatsApp(reject_sends=True)
     client = FakeAnthropic([FakeResponse([TextBlock("Morning! Maria is due.")])])
 
-    assert await digest.send_digest(conn, client, wa, ana) is False
+    assert await digest.send_digest(conn, client, wa, ana, pool=migrated) is False
 
     due = await leads_db.due_for(conn, ana)
     assert [r["nudge_count"] for r in due] == [0]
@@ -168,7 +168,7 @@ async def test_an_older_user_who_missed_8am_is_still_caught_up_later_that_day(co
     assert [u.id for u in due] == [ana.id]
 
 
-async def test_the_composer_uses_the_digest_model_not_the_butlers(conn, ana):
+async def test_the_composer_uses_the_digest_model_not_the_butlers(conn, ana, migrated):
     """The digest is one short paragraph written from a ~300-token JSON payload:
     no tools, no images, nothing to reason about. It must not silently ride on
     whatever the agent loop is set to — that is what made it cost Opus rates for
@@ -182,7 +182,7 @@ async def test_the_composer_uses_the_digest_model_not_the_butlers(conn, ana):
     )
     client = FakeAnthropic([FakeResponse([TextBlock("Morning!")])])
 
-    await digest.send_digest(conn, client, FakeWhatsApp(), ana)
+    await digest.send_digest(conn, client, FakeWhatsApp(), ana, pool=migrated)
 
     assert client.requests[0]["model"] == settings.digest_model
     assert settings.digest_model != settings.model, (
@@ -190,7 +190,7 @@ async def test_the_composer_uses_the_digest_model_not_the_butlers(conn, ana):
     )
 
 
-async def test_the_due_time_reaches_the_prompt_and_the_prompt_asks_for_it(conn, ana):
+async def test_the_due_time_reaches_the_prompt_and_the_prompt_asks_for_it(conn, ana, migrated):
     """A commitment due at 5pm is only actionable if the message says 5pm.
 
     The payload has always carried the timestamp; nothing asked the model to
@@ -207,7 +207,7 @@ async def test_the_due_time_reaches_the_prompt_and_the_prompt_asks_for_it(conn, 
     )
     client = FakeAnthropic([FakeResponse([TextBlock("Morning!")])])
 
-    await digest.send_digest(conn, client, FakeWhatsApp(), ana)
+    await digest.send_digest(conn, client, FakeWhatsApp(), ana, pool=migrated)
 
     # Compared as an instant, not as rendered text: `due_at` is timestamptz and
     # comes back in the session's timezone (America/New_York on the compose db
@@ -219,3 +219,66 @@ async def test_the_due_time_reaches_the_prompt_and_the_prompt_asks_for_it(conn, 
     assert "due" in client.requests[0]["system"].lower(), (
         "nothing in the system prompt tells the model to name the deadline"
     )
+
+
+async def test_composing_a_digest_is_recorded_against_the_recipient(migrated):
+    """Per-developer cost is the point of the user_id column, and the digest
+    is the one job where a row maps to exactly one person.
+
+    The user is committed in its own transaction first: record() inserts on
+    another pooled connection, so a user that exists only inside this test's
+    transaction fails the foreign key there and the error is swallowed,
+    leaving a test that asserts nothing.
+    """
+    from psycopg.rows import dict_row
+
+    from gaia.core.config import settings
+    from gaia.core.db.pool import tx
+
+    async with tx(migrated) as conn:
+        user = await users_db.create_user(conn, name="Ana", wa_id="13055559002")
+
+    async with tx(migrated) as conn:
+        await users_db.touch_inbound(conn, user)
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        await leads_db.create(
+            conn, user, contact_name="Maria", description="Buying", next_action_at=past
+        )
+        client = FakeAnthropic([FakeResponse([TextBlock("Morning!")])])
+        assert await digest.send_digest(
+            conn, client, FakeWhatsApp(), user, pool=migrated
+        ) is True
+
+    async with migrated.connection() as conn:
+        conn.row_factory = dict_row
+        cur = await conn.execute("SELECT job, user_id, model, turn_id FROM llm_calls")
+        rows = await cur.fetchall()
+
+    assert len(rows) == 1
+    assert rows[0]["job"] == "digest"
+    assert rows[0]["user_id"] == user.id
+    assert rows[0]["model"] == settings.digest_model
+    assert rows[0]["turn_id"] is None, (
+        "a digest is one call, not a turn — counting it as a one-call turn "
+        "would skew the calls-per-turn distribution"
+    )
+
+
+async def test_a_recording_failure_does_not_cost_the_digest(conn, ana, migrated, monkeypatch):
+    """The send matters more than the metric. A telemetry failure at 8am must
+    not be the reason nobody gets their morning message."""
+    async def boom(*a, **kw):
+        raise RuntimeError("telemetry is down")
+
+    monkeypatch.setattr("gaia.jobs.digest.usage_mod.record", boom)
+
+    await users_db.touch_inbound(conn, ana)
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+    await leads_db.create(
+        conn, ana, contact_name="Maria", description="Buying", next_action_at=past
+    )
+    wa = FakeWhatsApp()
+    client = FakeAnthropic([FakeResponse([TextBlock("Morning!")])])
+
+    assert await digest.send_digest(conn, client, wa, ana, pool=migrated) is True
+    assert len(wa.sent) == 1

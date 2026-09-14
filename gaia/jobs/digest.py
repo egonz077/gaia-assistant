@@ -7,9 +7,11 @@ their own timezones.
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+from gaia.core import usage as usage_mod
 from gaia.core.config import settings
 from gaia.core.db import commitments as commitments_db
 from gaia.core.db import leads as leads_db
@@ -95,7 +97,9 @@ async def _within_window(conn, user: User) -> bool:
     return bool((await cur.fetchone())["ok"])
 
 
-async def compose_digest(client, user: User, leads: list[dict], commitments: list[dict]) -> str:
+async def compose_digest(
+    client, user: User, leads: list[dict], commitments: list[dict], pool
+) -> str:
     payload = {
         "leads": [
             {"contact": r["name"], "description": r["description"],
@@ -109,6 +113,7 @@ async def compose_digest(client, user: User, leads: list[dict], commitments: lis
             for r in commitments
         ],
     }
+    started = time.monotonic()
     response = await client.messages.create(
         model=settings.digest_model,
         max_tokens=2000,
@@ -116,10 +121,25 @@ async def compose_digest(client, user: User, leads: list[dict], commitments: lis
         system=SYSTEM,
         messages=[{"role": "user", "content": str(payload)}],
     )
+    # `pool` is required and passed by every caller — a seam, not a switch.
+    # No turn_id: a digest is one call and not a turn, and counting it as a
+    # one-call turn would skew the calls-per-turn distribution.
+    #
+    # Guarded here as well as inside record(), matching the agent loop: a
+    # nobody-gets-their-8am-message failure is far worse than a missing
+    # telemetry row.
+    try:
+        await usage_mod.record(
+            pool, job="digest", user=user, model=settings.digest_model,
+            usage=response.usage, stop_reason=response.stop_reason,
+            duration_ms=int((time.monotonic() - started) * 1000),
+        )
+    except Exception:
+        log.exception("could not record usage for a digest")
     return "".join(b.text for b in response.content if b.type == "text").strip()
 
 
-async def send_digest(conn, client, wa, user: User) -> bool:
+async def send_digest(conn, client, wa, user: User, pool) -> bool:
     """Returns whether anything was sent. A digest on an empty day trains
     people to ignore the thread."""
     leads = await leads_db.due_for(conn, user)
@@ -127,7 +147,7 @@ async def send_digest(conn, client, wa, user: User) -> bool:
     if not leads and not commitments:
         return False
 
-    text = await compose_digest(client, user, leads, commitments)
+    text = await compose_digest(client, user, leads, commitments, pool)
     if not text:
         log.warning("empty digest for user %s", user.id)
         return False
@@ -169,7 +189,7 @@ async def run_once(pool, client, wa) -> int:
         # failure boundary match.
         try:
             async with tx(pool) as conn:
-                if await send_digest(conn, client, wa, user):
+                if await send_digest(conn, client, wa, user, pool):
                     sent += 1
         except Exception:
             log.exception("digest failed for user %s", user.id)
