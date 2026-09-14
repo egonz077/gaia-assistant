@@ -41,6 +41,7 @@ to backups the way you would treat access to that.
 | TLS | **Caddy 2** | Automatic Let's Encrypt. The only container publishing ports (80, 443). |
 | Model | **Anthropic Claude** via the official `anthropic` SDK | Two models, two jobs — see §4. |
 | Embeddings | **Voyage** `voyage-3.5-lite`, 1024 dims | Semantic search over past meetings. |
+| Speech-to-text | **Deepgram Nova-3** | Claude accepts no audio input at all, so voice notes are transcribed before the model sees them. Chosen for keyterm prompting — general English is solved, rare client names are not. |
 | Vector store | **pgvector** on **Postgres 17** (`pgvector/pgvector:pg17`) | RAG lives in the same database as everything else — one backup, one restore, one transaction. No second datastore to keep consistent. |
 | Scheduler | A plain `jobs` container looping every 15 min | Per-user 08:00 local delivery is not one cron line once people have timezones. |
 | Backups | Nightly `pg_dump` → **DigitalOcean Spaces**, 30-day retention | DO's own droplet backups are weekly; losing six days of meeting notes is not acceptable. |
@@ -74,6 +75,7 @@ Every value below lives only in `.env` on the droplet. **None are in git**
 | `DB_PASSWORD` | `db`, `app`, `jobs`, `backup` | Postgres password for the `gaia` role. Compose has no default — a missing value makes `docker compose` fail loudly rather than quietly standing up a client book behind a password published in this repo. | Full client book, if the attacker also reaches the compose network. Postgres publishes no port, so this is not directly internet-reachable. |
 | `ANTHROPIC_API_KEY` | `app`, `jobs` | Every model call: agent turns and the digest composer. | Billable API usage on your account. Rotate in the Anthropic console. |
 | `VOYAGE_API_KEY` | `app` | Embedding meeting text for semantic search. | Billable usage. Rotate in the Voyage console. |
+| `DEEPGRAM_API_KEY` | `app` | Transcribes voice notes. Claude accepts no audio input, so this is what turns a dictated note into text the model can read. Nova-3, English, with the sender's contact roster sent as keyterms; every request sets `mip_opt_out=true`. | Billable usage, and someone could transcribe their own audio on your account. Rotate in the Deepgram console. |
 | `WA_ACCESS_TOKEN` | `app`, `jobs` | Permanent System User token. Sends messages, marks read, downloads media. | **Someone can message your clients as you.** Rotate immediately in Meta Business Settings → System Users. |
 | `WA_APP_SECRET` | `app` | Verifies the `X-Hub-Signature-256` on every inbound webhook. This is what stops anyone who finds the URL from injecting fake messages. | Forged inbound messages. Rotate in the Meta app dashboard. |
 | `WA_VERIFY_TOKEN` | `app` | A string you invent. Meta echoes it once when you first subscribe the webhook. | Low. Only useful during webhook setup. |
