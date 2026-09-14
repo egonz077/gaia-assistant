@@ -1,9 +1,11 @@
 import logging
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from gaia.capabilities.base import registry
 from gaia.core import transcription
+from gaia.core import usage as usage_mod
 from gaia.core.db import contacts as contacts_db
 from gaia.core.db import messages as messages_db
 from gaia.core.db import users as users_db
@@ -164,7 +166,47 @@ async def receive(conn, user: User, message: dict) -> bool:
     return True
 
 
-async def _build_blocks(conn, user: User, batch: list[dict], wa) -> tuple[list[dict], list[str]]:
+class _NoTokens:
+    """A transcription spends no tokens. The columns still have to be filled,
+    and zeros are the truth — `audio_seconds` is what prices the row."""
+
+    input_tokens = 0
+    output_tokens = 0
+
+
+async def _record_transcription(
+    pool, user: User, seconds: float, started: float, stop_reason: str | None = None
+) -> None:
+    """One row per transcription attempt, successes and failures alike.
+
+    Failures are recorded because a failure rate is a product signal: without
+    a row it stays invisible until people report that voice notes "sometimes
+    do nothing".
+
+    No turn_id. This runs before run_agent exists, and calls_per_turn counts
+    agent-loop iterations — the number exists to show turns reaching
+    MAX_ITERATIONS, and a transcription counted as one would corrupt it.
+
+    Guarded here as well as inside record(), matching the agent loop: a note
+    that transcribed correctly must not be lost because a metrics insert
+    failed.
+    """
+    if pool is None:
+        return
+    try:
+        await usage_mod.record(
+            pool, job="transcription", user=user, model="nova-3",
+            usage=_NoTokens(), stop_reason=stop_reason,
+            duration_ms=int((time.monotonic() - started) * 1000),
+            audio_seconds=seconds,
+        )
+    except Exception:
+        log.exception("could not record a transcription for user %s", user.id)
+
+
+async def _build_blocks(
+    conn, user: User, batch: list[dict], wa, pool
+) -> tuple[list[dict], list[str]]:
     """Turn a debounced burst into content blocks for the model, turning a
     single unreadable image into a note in the transcript instead of losing
     the whole batch.
@@ -205,6 +247,7 @@ async def _build_blocks(conn, user: User, batch: list[dict], wa) -> tuple[list[d
                 "text": message.get("caption") or PHOTO_CAPTION_FALLBACK,
             })
         elif message["type"] == "audio":
+            started = time.monotonic()
             try:
                 audio, mime_type = await wa.download_audio(message["audio_id"])
                 # Ownership- and visibility-scoped, so only the names this
@@ -223,11 +266,15 @@ async def _build_blocks(conn, user: User, batch: list[dict], wa) -> tuple[list[d
                     "could not transcribe audio %s for user %s",
                     message["audio_id"], user.id,
                 )
+                await _record_transcription(
+                    pool, user, 0.0, started, stop_reason="error"
+                )
                 blocks.append({"type": "text", "text": VOICE_FAILED_NOTE})
                 await messages_db.set_content(
                     conn, user, message["id"], VOICE_FAILED_NOTE
                 )
                 continue
+            await _record_transcription(pool, user, _seconds, started)
             labelled = f"{VOICE_PREFIX}{text}"
             blocks.append({"type": "text", "text": labelled})
             await messages_db.set_content(conn, user, message["id"], labelled)
@@ -275,7 +322,7 @@ async def handle_turn(user: User, batch: list[dict], wa) -> None:
 
     try:
         async with tx() as conn:
-            blocks, wa_ids = await _build_blocks(conn, user, batch, wa)
+            blocks, wa_ids = await _build_blocks(conn, user, batch, wa, get_pool())
     except Exception:
         log.exception("failed preparing inbound messages for user %s", user.id)
         await _apologize(wa, user)

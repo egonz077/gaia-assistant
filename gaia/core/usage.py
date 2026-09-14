@@ -19,6 +19,7 @@ async def record(
     stop_reason: str | None,
     duration_ms: int | None,
     turn_id=None,
+    audio_seconds: float | None = None,
 ) -> None:
     """Write one row for one model call. Never raises.
 
@@ -45,8 +46,8 @@ async def record(
                 """INSERT INTO model_calls
                        (job, user_id, model, input_tokens, output_tokens,
                         cache_creation_input_tokens, cache_read_input_tokens,
-                        stop_reason, duration_ms, turn_id)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        stop_reason, duration_ms, turn_id, audio_seconds)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 (
                     job,
                     user.id if user else None,
@@ -58,6 +59,7 @@ async def record(
                     stop_reason,
                     duration_ms,
                     turn_id,
+                    audio_seconds,
                 ),
             )
     except Exception:

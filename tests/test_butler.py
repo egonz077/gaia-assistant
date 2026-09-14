@@ -389,7 +389,7 @@ async def test_a_voice_note_becomes_a_labelled_text_block(conn, ana, monkeypatch
     batch = [{"id": "wamid.1", "type": "audio", "audio_id": "m1",
               "mime_type": "audio/ogg", "voice": True}]
 
-    blocks, wa_ids = await butler._build_blocks(conn, ana, batch, FakeWhatsApp())
+    blocks, wa_ids = await butler._build_blocks(conn, ana, batch, FakeWhatsApp(), None)
 
     assert blocks == [{
         "type": "text",
@@ -417,7 +417,7 @@ async def test_the_roster_is_sent_as_keyterms(conn, ana, monkeypatch):
     batch = [{"id": "w1", "type": "audio", "audio_id": "m1",
               "mime_type": "audio/ogg", "voice": True}]
 
-    await butler._build_blocks(conn, ana, batch, FakeWhatsApp())
+    await butler._build_blocks(conn, ana, batch, FakeWhatsApp(), None)
 
     assert "Okonkwo" in seen["keyterms"]
     assert "Marta Delgado" in seen["keyterms"]
@@ -443,7 +443,7 @@ async def test_a_failed_transcription_does_not_lose_the_rest_of_the_burst(
         {"id": "w2", "type": "text", "text": "and the comps are due Friday"},
     ]
 
-    blocks, wa_ids = await butler._build_blocks(conn, ana, batch, FakeWhatsApp())
+    blocks, wa_ids = await butler._build_blocks(conn, ana, batch, FakeWhatsApp(), None)
 
     texts = [b["text"] for b in blocks]
     assert butler.VOICE_FAILED_NOTE in texts
@@ -460,7 +460,7 @@ async def test_a_failed_download_is_also_survivable(conn, ana):
               "mime_type": "audio/ogg", "voice": True}]
 
     blocks, _ = await butler._build_blocks(
-        conn, ana, batch, FakeWhatsApp(media_errors={"m1"})
+        conn, ana, batch, FakeWhatsApp(media_errors={"m1"}), None
     )
 
     assert blocks == [{"type": "text", "text": butler.VOICE_FAILED_NOTE}]
@@ -481,3 +481,93 @@ def test_the_prompt_warns_that_transcribed_names_may_be_wrong():
 
     assert "[voice note]" in BASE_PROMPT
     assert "mishear" in BASE_PROMPT.lower()
+
+
+async def test_a_transcription_is_recorded_with_its_duration(migrated, monkeypatch):
+    """Priced per minute, so the duration is the billable fact. turn_id stays
+    NULL: this runs before run_agent exists, and calls_per_turn counts
+    agent-loop iterations — a transcription counted as one would corrupt it."""
+    from psycopg.rows import dict_row
+
+    from gaia import butler
+    from gaia.core.db import users as users_db
+    from gaia.core.db.pool import tx
+    from tests.fakes import FakeWhatsApp
+
+    async def fake_transcribe(audio, mime_type, keyterms):
+        return "Met Marta.", 150.0
+
+    monkeypatch.setattr("gaia.butler.transcription.transcribe", fake_transcribe)
+
+    async with tx(migrated) as conn:
+        user = await users_db.create_user(conn, name="Ana", wa_id="13055559003")
+    async with tx(migrated) as conn:
+        batch = [{"id": "w1", "type": "audio", "audio_id": "m1",
+                  "mime_type": "audio/ogg", "voice": True}]
+        await butler._build_blocks(conn, user, batch, FakeWhatsApp(), migrated)
+
+    async with migrated.connection() as conn:
+        conn.row_factory = dict_row
+        cur = await conn.execute("SELECT * FROM model_calls")
+        rows = await cur.fetchall()
+
+    assert len(rows) == 1
+    assert rows[0]["job"] == "transcription"
+    assert rows[0]["model"] == "nova-3"
+    assert float(rows[0]["audio_seconds"]) == 150.0
+    assert rows[0]["turn_id"] is None
+    assert rows[0]["user_id"] == user.id
+
+
+async def test_a_failed_transcription_is_recorded_as_an_error(migrated, monkeypatch):
+    """A failure rate is a product signal. Without a row it stays invisible
+    until people complain that voice notes 'sometimes do nothing'."""
+    from psycopg.rows import dict_row
+
+    from gaia import butler
+    from gaia.core.db import users as users_db
+    from gaia.core.db.pool import tx
+    from gaia.core.transcription import TranscriptionError
+    from tests.fakes import FakeWhatsApp
+
+    async def boom(audio, mime_type, keyterms):
+        raise TranscriptionError("vendor down")
+
+    monkeypatch.setattr("gaia.butler.transcription.transcribe", boom)
+
+    async with tx(migrated) as conn:
+        user = await users_db.create_user(conn, name="Ana", wa_id="13055559004")
+    async with tx(migrated) as conn:
+        batch = [{"id": "w1", "type": "audio", "audio_id": "m1",
+                  "mime_type": "audio/ogg", "voice": True}]
+        await butler._build_blocks(conn, user, batch, FakeWhatsApp(), migrated)
+
+    async with migrated.connection() as conn:
+        conn.row_factory = dict_row
+        cur = await conn.execute("SELECT * FROM model_calls")
+        rows = await cur.fetchall()
+
+    assert len(rows) == 1
+    assert rows[0]["stop_reason"] == "error"
+    assert rows[0]["job"] == "transcription"
+
+
+async def test_a_telemetry_failure_does_not_cost_the_transcript(conn, ana, monkeypatch):
+    """The note matters more than the metric."""
+    from gaia import butler
+    from tests.fakes import FakeWhatsApp
+
+    async def fake_transcribe(audio, mime_type, keyterms):
+        return "Met Marta.", 10.0
+
+    async def boom(*a, **kw):
+        raise RuntimeError("telemetry is down")
+
+    monkeypatch.setattr("gaia.butler.transcription.transcribe", fake_transcribe)
+    monkeypatch.setattr("gaia.butler.usage_mod.record", boom)
+    batch = [{"id": "w1", "type": "audio", "audio_id": "m1",
+              "mime_type": "audio/ogg", "voice": True}]
+
+    blocks, _ = await butler._build_blocks(conn, ana, batch, FakeWhatsApp(), None)
+
+    assert blocks == [{"type": "text", "text": "[voice note] Met Marta."}]
