@@ -5,6 +5,7 @@ import argparse
 import asyncio
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from gaia.core import stats as stats_mod
 from gaia.core.db import contacts as contacts_db
 from gaia.core.db import users as users_db
 from gaia.core.db.pool import get_pool, tx
@@ -60,7 +61,76 @@ def build_parser() -> argparse.ArgumentParser:
         help="phone of the developer the merge runs as; they must see both rows",
     )
 
+    stats_cmd = sub.add_parser(
+        "stats", help="what the product cost to run, and what it produced"
+    )
+    stats_cmd.add_argument("--days", type=int, default=30)
+    stats_cmd.add_argument(
+        "--html", action="store_true",
+        help="write a self-contained page to stdout instead of text",
+    )
+
     return parser
+
+
+def _format_stats(d: dict) -> str:
+    """Plain text, because the common case is reading this over ssh."""
+    lines = [f"Last {d['days']} days", ""]
+
+    t = d["totals"]
+    if not t["calls"]:
+        lines += ["no model calls recorded in this window", ""]
+    else:
+        lines += [
+            f"  {t['calls']} model calls, ${t['cost']:.2f}",
+            f"  {t['input_tokens']:,} input tokens, {t['output_tokens']:,} output",
+        ]
+        if d["cache_hit_rate"] is not None:
+            lines.append(f"  cache hit rate: {d['cache_hit_rate'] * 100:.0f}%")
+        lines.append("")
+
+        lines.append("By job")
+        for r in d["by_job"]:
+            lines.append(f"  {r['job']:<14} {r['calls']:>5} calls  ${r['cost']:>8.2f}")
+        lines.append("")
+
+        lines.append("By developer")
+        for r in d["by_user"]:
+            lines.append(f"  {r['name']:<22} {r['calls']:>5} calls  ${r['cost']:>8.2f}")
+        lines.append("")
+
+        if d["calls_per_turn"]:
+            # MAX_ITERATIONS is 8; a turn that reached the cap returned
+            # FALLBACK_TEXT rather than an answer.
+            spread = ", ".join(f"{k}:{v}" for k, v in sorted(d["calls_per_turn"].items()))
+            lines += [f"Calls per turn: {spread}", ""]
+
+        if d["stop_reasons"]:
+            reasons = ", ".join(
+                f"{k or 'none'}={v}"
+                for k, v in sorted(d["stop_reasons"].items(), key=lambda kv: str(kv[0]))
+            )
+            lines += [f"Stop reasons: {reasons}", ""]
+
+    if d["unknown_models"]:
+        lines += [
+            "Tokens counted with no cost — no rate card for: "
+            + ", ".join(d["unknown_models"]),
+            "",
+        ]
+
+    m, c, le = d["meetings"], d["commitments"], d["leads"]
+    cpm = d["contacts_per_meeting"]
+    lines += [
+        "Product",
+        f"  meetings filed     {m['total']}  ({m['photo']} photo, {m['text']} text)",
+        f"  contacts/meeting   {cpm['mean']:.1f} mean, {cpm['max']} max",
+        f"  commitments        {c['total']}  ({c['with_due_date']} dated, {c['done']} done)",
+        f"  leads opened       {le['total']}  ({le['with_next_action']} with a next action)",
+        f"  active developers  {d['users']['active']}  "
+        f"({d['users']['digested_today']} digested today)",
+    ]
+    return "\n".join(lines)
 
 
 async def _run(args, pool=None) -> None:
@@ -98,6 +168,9 @@ async def _run(args, pool=None) -> None:
                         f"nothing merged: {acting.name} cannot see both contacts, "
                         "or they are the same row"
                     )
+            elif args.command == "stats":
+                data = await stats_mod.collect(conn, days=args.days)
+                print(_format_stats(data))
     finally:
         if owns_pool:
             await p.close()

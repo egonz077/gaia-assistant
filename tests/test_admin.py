@@ -157,3 +157,48 @@ async def test_run_merge_contacts_reports_an_unknown_acting_user(migrated, capsy
         pool=migrated,
     )
     assert "no active user with phone 19998887777" in capsys.readouterr().out
+
+
+async def test_stats_prints_totals_and_the_cache_hit_rate(migrated, capsys):
+    from gaia.core.db.pool import tx
+
+    async with tx(migrated) as conn:
+        ana = await users_db.create_user(conn, name="Ana", wa_id="13055550001")
+        await conn.execute(
+            """INSERT INTO llm_calls (job, user_id, model, input_tokens, output_tokens,
+                                      cache_creation_input_tokens, cache_read_input_tokens)
+               VALUES ('turn', %s, 'claude-opus-5', 100, 10, 300, 600)""",
+            (ana.id,),
+        )
+
+    await _run(build_parser().parse_args(["stats"]), pool=migrated)
+
+    out = capsys.readouterr().out
+    assert "turn" in out
+    assert "60%" in out, "the cache hit rate must appear as a percentage"
+    assert "Ana" in out
+
+
+async def test_stats_on_an_empty_database_says_so(migrated, capsys):
+    """A fresh deploy must produce a readable report, not a crash."""
+    await _run(build_parser().parse_args(["stats"]), pool=migrated)
+
+    out = capsys.readouterr().out
+    assert "no model calls" in out.lower()
+
+
+async def test_stats_honours_the_days_window(migrated, capsys):
+    from gaia.core.db.pool import tx
+
+    async with tx(migrated) as conn:
+        ana = await users_db.create_user(conn, name="Ana", wa_id="13055550001")
+        await conn.execute(
+            """INSERT INTO llm_calls (job, user_id, model, input_tokens, output_tokens,
+                                      created_at)
+               VALUES ('turn', %s, 'claude-opus-5', 100, 10, now() - interval '10 days')""",
+            (ana.id,),
+        )
+
+    await _run(build_parser().parse_args(["stats", "--days", "7"]), pool=migrated)
+
+    assert "no model calls" in capsys.readouterr().out.lower()
