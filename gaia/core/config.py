@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     # effort parameter outright, where Sonnet 5 accepts it.
     digest_model: str = "claude-sonnet-5"
 
+    # Deepgram, for transcribing voice notes. Empty by default so a checkout
+    # with no voice feature configured still imports, and so the test suite
+    # never holds a real credential; a transcription attempted without it fails
+    # visibly at the vendor rather than quietly doing nothing.
+    deepgram_api_key: str = ""
+
     debounce_seconds: float = 3.0
 
 

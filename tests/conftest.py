@@ -13,6 +13,8 @@ os.environ.setdefault("DATABASE_URL", "postgresql://placeholder/overridden_by_po
 # env_file=".env", and real env vars take precedence over that file.
 os.environ.setdefault("MODEL", "claude-opus-5")
 os.environ.setdefault("DIGEST_MODEL", "claude-sonnet-5")
+# Pinned so the hermetic suite can never reach Deepgram with a real key.
+os.environ.setdefault("DEEPGRAM_API_KEY", "dg-test")
 
 import psycopg
 import pytest
