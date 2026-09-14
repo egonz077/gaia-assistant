@@ -114,6 +114,32 @@ used to be any string, and a typo was not a typo: `ZoneInfo()` raises inside
 the digest's per-user loop, so one bad row meant nobody in the company got a
 digest again, and that agent got an error reply to every message she sent.
 
+## What it costs to run
+
+    docker compose exec -T app python -m gaia.core.admin stats
+    docker compose exec -T app python -m gaia.core.admin stats --days 7
+
+For a page you can open on a laptop or a phone, pull it down over the ssh
+session you already have — no scp step, no new port, nothing listening:
+
+    ssh gaia 'cd /opt/gaia-assistant && docker compose exec -T app \
+        python -m gaia.core.admin stats --html' > report.html
+
+The report carries aggregates only — no contact names and no meeting text — so
+it is safe to screenshot and send to someone. `llm_calls` is the one table in
+the schema with nowhere to put a client in it.
+
+Cost is computed when the report is read, from the rate card in
+`gaia/core/stats.py`. Edit that dict when Anthropic's prices change and every
+historical row reprices correctly; a model with no entry there reports its
+tokens with no cost and is named in the output, rather than being priced from
+the wrong card.
+
+The number worth watching first is the **cache hit rate**. `core/llm.py`'s
+`_system_blocks` puts the cache breakpoint after the stable prefix on the
+argument that the contact roster reorders on nearly every `save_meeting`, and
+until now that was a belief rather than a measurement.
+
 ## Merging duplicate contacts
 
 Two rows for the same person happen: the index on `lower(name)` is

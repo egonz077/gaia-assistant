@@ -6,6 +6,7 @@ import asyncio
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from gaia.core import stats as stats_mod
+from gaia.core import stats_html
 from gaia.core.db import contacts as contacts_db
 from gaia.core.db import users as users_db
 from gaia.core.db.pool import get_pool, tx
@@ -170,7 +171,7 @@ async def _run(args, pool=None) -> None:
                     )
             elif args.command == "stats":
                 data = await stats_mod.collect(conn, days=args.days)
-                print(_format_stats(data))
+                print(stats_html.render(data) if args.html else _format_stats(data))
     finally:
         if owns_pool:
             await p.close()

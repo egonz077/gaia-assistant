@@ -202,3 +202,12 @@ async def test_stats_honours_the_days_window(migrated, capsys):
     await _run(build_parser().parse_args(["stats", "--days", "7"]), pool=migrated)
 
     assert "no model calls" in capsys.readouterr().out.lower()
+
+
+async def test_stats_html_writes_a_self_contained_page(migrated, capsys):
+    await _run(build_parser().parse_args(["stats", "--html"]), pool=migrated)
+
+    out = capsys.readouterr().out
+    assert out.strip().startswith("<!doctype html>")
+    assert "<script" not in out.lower()
+    assert "https://" not in out, "no CDN — it has to open from a file:// URL"
