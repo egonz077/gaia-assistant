@@ -140,7 +140,8 @@ async def collect(conn, days: int = 30) -> dict:
     cur = await conn.execute(
         """SELECT count(*) AS total,
                   count(*) FILTER (WHERE source = 'photo_notes') AS photo,
-                  count(*) FILTER (WHERE source = 'text') AS text
+                  count(*) FILTER (WHERE source = 'text') AS text,
+                  count(*) FILTER (WHERE source = 'voice_note') AS voice
            FROM meetings
            WHERE created_at >= now() - make_interval(days => %(days)s)""",
         window,

@@ -1,0 +1,12 @@
+-- meetings.source is an enum, not free text, so a dictated note needs its own
+-- value declared before it can be written.
+--
+-- The type already carries an unused 'transcript' value from 001. It is not
+-- reused here: a photographed note is a transcription too, and the entire
+-- point of a third bucket is telling dictation and handwriting apart in the
+-- report. 'transcript' stays where it is — removing a value from a Postgres
+-- enum means recreating the type, which is not worth it for tidiness.
+--
+-- ALTER TYPE ... ADD VALUE runs inside a transaction on Postgres 12+ as long
+-- as nothing uses the new value in that same transaction. No migration does.
+ALTER TYPE source_kind ADD VALUE IF NOT EXISTS 'voice_note';

@@ -20,7 +20,7 @@ DATA = {
     "stop_reasons": {"end_turn": 11, "max_tokens": 1},
     "unknown_models": [],
     "calls_per_turn": {1: 4, 2: 3, 8: 1},
-    "meetings": {"total": 3, "photo": 2, "text": 1},
+    "meetings": {"total": 3, "photo": 2, "text": 1, "voice": 0},
     "contacts_per_meeting": {"mean": 1.5, "max": 3},
     "meetings_by_day_and_user": [],
     "commitments": {"total": 8, "with_due_date": 3, "done": 7},

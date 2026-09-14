@@ -45,9 +45,12 @@ async def save_meeting(conn, user: User, args: dict) -> dict:
         conn,
         user,
         summary=args["summary"],
-        # `source` describes where the meeting came from, so it still keys off
-        # the transcription alone — a dictated private note is not a photo.
-        source="photo_notes" if raw_transcription else "text",
+        # The model sets this when it can tell, and it can: it sees the
+        # [voice note] prefix. The derivation is only the fallback, and it
+        # cannot distinguish a dictated transcript from a photographed one —
+        # both arrive as raw_transcription, so without the explicit value
+        # every voice note was filed as a photo.
+        source=args.get("source") or ("photo_notes" if raw_transcription else "text"),
         raw_input=raw_input,
         happened_at=args.get("happened_at"),
         visibility=visibility,

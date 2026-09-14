@@ -209,3 +209,16 @@ async def test_an_unpriced_audio_model_is_named_not_silently_free(conn, ana):
 
     assert data["unknown_models"] == ["whisper-somewhere"]
     assert data["totals"]["cost"] == 0.0
+
+
+async def test_collect_counts_voice_meetings_separately(conn, ana):
+    """Without its own bucket a dictated meeting vanishes from the split —
+    counted in the total, absent from photo and text."""
+    await meetings_db.save(conn, ana, summary="dictated", source="voice_note")
+
+    data = await stats.collect(conn, days=30)
+
+    assert data["meetings"]["total"] == 1
+    assert data["meetings"]["voice"] == 1
+    assert data["meetings"]["photo"] == 0
+    assert data["meetings"]["text"] == 0

@@ -157,7 +157,8 @@ def render(d: dict) -> str:
     parts += [
         "<h2>Product</h2>",
         _table(["", "Count", "Of which"], [
-            ["Meetings filed", f"{m['total']:,}", f"{m['photo']} photo / {m['text']} text"],
+            ["Meetings filed", f"{m['total']:,}",
+             f"{m['photo']} photo / {m['text']} text / {m['voice']} voice"],
             ["Contacts per meeting", f"{cpm['mean']:.1f}", f"{cpm['max']} at most"],
             ["Commitments", f"{c['total']:,}",
              f"{c['with_due_date']} dated / {c['done']} done"],

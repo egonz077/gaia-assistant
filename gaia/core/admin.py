@@ -126,7 +126,8 @@ def _format_stats(d: dict) -> str:
     cpm = d["contacts_per_meeting"]
     lines += [
         "Product",
-        f"  meetings filed     {m['total']}  ({m['photo']} photo, {m['text']} text)",
+        f"  meetings filed     {m['total']}  ({m['photo']} photo, {m['text']} text, "
+        f"{m['voice']} voice)",
         f"  contacts/meeting   {cpm['mean']:.1f} mean, {cpm['max']} max",
         f"  commitments        {c['total']}  ({c['with_due_date']} dated, {c['done']} done)",
         f"  leads opened       {le['total']}  ({le['with_next_action']} with a next action)",

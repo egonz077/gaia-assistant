@@ -193,3 +193,43 @@ async def test_set_meeting_visibility_can_restore_to_org(conn, ana):
     assert outcome == {"changed": True, "visibility": "org"}
     cur = await conn.execute("SELECT visibility FROM meetings WHERE id = %s", (meeting_id,))
     assert (await cur.fetchone())["visibility"] == "org"
+
+
+async def test_a_dictated_meeting_is_filed_as_a_voice_note(conn, ana):
+    """Without this it lands as photo_notes: source was derived from
+    raw_transcription being present, which is just as true of a voice
+    transcript as of a photographed one."""
+    await save_meeting(conn, ana, {
+        "summary": "Showed Coral Gables",
+        "raw_transcription": "Met Marta at the listing this morning...",
+        "source": "voice_note",
+    })
+
+    cur = await conn.execute("SELECT source FROM meetings WHERE user_id = %s", (ana.id,))
+    assert (await cur.fetchone())["source"] == "voice_note"
+
+
+async def test_a_photo_still_defaults_to_photo_notes(conn, ana):
+    """The derivation stays as the fallback; only an explicit source overrides."""
+    await save_meeting(conn, ana, {
+        "summary": "Showed Coral Gables",
+        "raw_transcription": "handwriting, transcribed",
+    })
+
+    cur = await conn.execute("SELECT source FROM meetings WHERE user_id = %s", (ana.id,))
+    assert (await cur.fetchone())["source"] == "photo_notes"
+
+
+async def test_a_typed_note_still_defaults_to_text(conn, ana):
+    await save_meeting(conn, ana, {"summary": "Quick note"})
+
+    cur = await conn.execute("SELECT source FROM meetings WHERE user_id = %s", (ana.id,))
+    assert (await cur.fetchone())["source"] == "text"
+
+
+def test_the_schema_offers_the_source_so_the_model_can_set_it():
+    from gaia.capabilities.meetings import SAVE_SCHEMA
+
+    assert SAVE_SCHEMA["properties"]["source"]["enum"] == [
+        "text", "photo_notes", "voice_note"
+    ]

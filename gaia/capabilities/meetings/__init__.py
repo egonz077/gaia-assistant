@@ -12,7 +12,18 @@ SAVE_SCHEMA = {
         "summary": {"type": "string"},
         "raw_transcription": {
             "type": "string",
-            "description": "Full transcription when the source was a photo",
+            "description": "Full transcription when the source was a photo or a "
+                           "voice note",
+        },
+        "source": {
+            "type": "string",
+            "enum": ["text", "photo_notes", "voice_note"],
+            "description": "Where these notes came from. Set voice_note when the "
+                           "message was prefixed [voice note], photo_notes for a "
+                           "photograph of handwriting, text when they were typed. "
+                           "Inferred from the transcription if omitted, which "
+                           "cannot tell a dictated transcript from a "
+                           "photographed one.",
         },
         "happened_at": {
             "type": "string",
