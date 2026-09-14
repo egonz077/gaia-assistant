@@ -88,6 +88,8 @@ def _format_stats(d: dict) -> str:
         ]
         if d["cache_hit_rate"] is not None:
             lines.append(f"  cache hit rate: {d['cache_hit_rate'] * 100:.0f}%")
+        if d["audio_minutes"]:
+            lines.append(f"  audio transcribed: {d['audio_minutes']:.1f} min")
         lines.append("")
 
         lines.append("By job")

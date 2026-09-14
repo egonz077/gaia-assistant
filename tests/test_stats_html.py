@@ -16,6 +16,7 @@ DATA = {
                {"day": "2026-09-13", "calls": 7, "cost": 0.73, "input_tokens": 1,
                 "output_tokens": 1, "cache_creation": 0, "cache_read": 0}],
     "cache_hit_rate": 0.42,
+    "audio_minutes": 12.5,
     "stop_reasons": {"end_turn": 11, "max_tokens": 1},
     "unknown_models": [],
     "calls_per_turn": {1: 4, 2: 3, 8: 1},
@@ -57,7 +58,8 @@ def test_an_empty_window_still_renders():
     empty = {**DATA,
              "totals": {"calls": 0, "input_tokens": 0, "output_tokens": 0, "cost": 0.0},
              "by_job": [], "by_model": [], "by_user": [], "by_day": [],
-             "cache_hit_rate": None, "stop_reasons": {}, "calls_per_turn": {}}
+             "cache_hit_rate": None, "stop_reasons": {}, "calls_per_turn": {},
+             "audio_minutes": 0}
 
     html = stats_html.render(empty)
 

@@ -26,6 +26,13 @@ PRICES: dict[str, dict[str, float]] = {
 CACHE_WRITE_MULTIPLIER = 1.25   # cache_creation_input_tokens
 CACHE_READ_MULTIPLIER = 0.10    # cache_read_input_tokens
 
+# USD per MINUTE of audio. A different unit from PRICES above, and kept in its
+# own dict rather than bolted into that one: a per-token rate and a per-minute
+# rate sharing a shape is a mistake waiting to be made.
+AUDIO_PRICES: dict[str, float] = {
+    "nova-3": 0.0043,
+}
+
 
 def row_cost(
     model: str,
@@ -33,13 +40,22 @@ def row_cost(
     output_tokens: int,
     cache_creation: int = 0,
     cache_read: int = 0,
+    audio_seconds: float | None = None,
 ) -> float | None:
     """Dollars for one call, or None if the model has no rate card.
+
+    Branches on the unit the row is billed in. A transcription row carries
+    audio_seconds and zeros in every token column, so pricing it as tokens
+    would report it as free rather than as differently billed.
 
     None rather than a guess: a number derived from the wrong rate card is
     worse than an admitted gap, because it looks like an answer. `collect`
     names the unpriced models so a zero cannot read as "cheap".
     """
+    if audio_seconds is not None:
+        rate = AUDIO_PRICES.get(model)
+        return None if rate is None else (float(audio_seconds) / 60.0) * rate
+
     price = PRICES.get(model)
     if price is None:
         return None
@@ -55,6 +71,7 @@ def _cost_of(row: dict) -> float:
     return row_cost(
         row["model"], row["input_tokens"], row["output_tokens"],
         row["cache_creation_input_tokens"], row["cache_read_input_tokens"],
+        audio_seconds=row.get("audio_seconds"),
     ) or 0.0
 
 
@@ -70,7 +87,7 @@ async def collect(conn, days: int = 30) -> dict:
     cur = await conn.execute(
         """SELECT job, model, input_tokens, output_tokens,
                   cache_creation_input_tokens, cache_read_input_tokens,
-                  stop_reason, created_at::date AS day, user_id
+                  audio_seconds, stop_reason, created_at::date AS day, user_id
            FROM model_calls
            WHERE created_at >= now() - make_interval(days => %(days)s)""",
         window,
@@ -194,7 +211,15 @@ async def collect(conn, days: int = 30) -> dict:
         "by_day": sorted(_group("day"), key=lambda r: r["day"]),
         "cache_hit_rate": (cache_read / denominator) if denominator else None,
         "stop_reasons": stop_reasons,
-        "unknown_models": sorted({c["model"] for c in calls if c["model"] not in PRICES}),
+        # Checked against whichever rate card the row's unit belongs to. A
+        # check that consulted only PRICES would report nova-3 — the one audio
+        # vendor we do price — as unpriced.
+        "unknown_models": sorted({
+            c["model"] for c in calls
+            if (c["audio_seconds"] is not None and c["model"] not in AUDIO_PRICES)
+            or (c["audio_seconds"] is None and c["model"] not in PRICES)
+        }),
+        "audio_minutes": sum(float(c["audio_seconds"] or 0) for c in calls) / 60.0,
         "calls_per_turn": calls_per_turn,
         "meetings": dict(meetings),
         "contacts_per_meeting": dict(contacts_per_meeting),

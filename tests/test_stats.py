@@ -155,3 +155,57 @@ async def test_collect_on_an_empty_database_reports_zeros(conn):
     assert data["by_job"] == []
     assert data["calls_per_turn"] == {}
     assert data["contacts_per_meeting"]["max"] == 0
+
+
+def test_audio_is_priced_per_minute_not_per_token():
+    """Transcription bills in audio-seconds. 120 seconds of nova-3 at
+    $0.0043/min is $0.0086 — and the token columns are zero, so a token-based
+    reading of the same row would report it as free rather than as differently
+    billed."""
+    cost = stats.row_cost("nova-3", 0, 0, 0, 0, audio_seconds=120)
+
+    assert round(cost, 6) == round(2 * 0.0043, 6)
+
+
+def test_an_unpriced_audio_vendor_reports_no_cost():
+    assert stats.row_cost("some-other-asr", 0, 0, 0, 0, audio_seconds=60) is None
+
+
+def test_token_pricing_is_unaffected_by_the_audio_branch():
+    """The existing path must not move. Same fixed mix as before."""
+    assert round(stats.row_cost("claude-opus-5", 1000, 500, 1000, 10000), 6) == 0.02875
+
+
+async def test_collect_reports_audio_minutes_and_transcription_cost(conn, ana):
+    await conn.execute(
+        """INSERT INTO model_calls (job, user_id, model, input_tokens, output_tokens,
+                                    audio_seconds)
+           VALUES ('transcription', %s, 'nova-3', 0, 0, 150)""",
+        (ana.id,),
+    )
+
+    data = await stats.collect(conn, days=30)
+
+    assert data["audio_minutes"] == 2.5
+    by_job = {r["job"]: r for r in data["by_job"]}
+    assert round(by_job["transcription"]["cost"], 6) == round(2.5 * 0.0043, 6)
+    assert data["unknown_models"] == [], (
+        "nova-3 is priced in AUDIO_PRICES, not PRICES — an unknown-model check "
+        "that only consults PRICES would report the one vendor we do price"
+    )
+
+
+async def test_an_unpriced_audio_model_is_named_not_silently_free(conn, ana):
+    """The token path already does this. The audio path must too, or a vendor
+    with no rate card reports $0.00 and reads as cheap."""
+    await conn.execute(
+        """INSERT INTO model_calls (job, user_id, model, input_tokens, output_tokens,
+                                    audio_seconds)
+           VALUES ('transcription', %s, 'whisper-somewhere', 0, 0, 60)""",
+        (ana.id,),
+    )
+
+    data = await stats.collect(conn, days=30)
+
+    assert data["unknown_models"] == ["whisper-somewhere"]
+    assert data["totals"]["cost"] == 0.0

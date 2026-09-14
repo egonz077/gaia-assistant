@@ -102,6 +102,14 @@ def render(d: dict) -> str:
             f"<div class='big'>{t['calls']:,}</div></div>",
             f"<div class='card'><div class='label'>Cache hit rate</div>"
             f"<div class='big'>{rate}</div></div>",
+        ]
+        if d["audio_minutes"]:
+            parts.append(
+                f"<div class='card'><div class='label'>Audio transcribed</div>"
+                f"<div class='big'>{d['audio_minutes']:.0f}"
+                f"<span style='font-size:16px'> min</span></div></div>"
+            )
+        parts += [
             "</div>",
             "<h2>Cost per day</h2>", _bars(d["by_day"]),
             "<h2>By job</h2>",
