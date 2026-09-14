@@ -42,7 +42,7 @@ async def record(
     try:
         async with tx(pool) as conn:
             await conn.execute(
-                """INSERT INTO llm_calls
+                """INSERT INTO model_calls
                        (job, user_id, model, input_tokens, output_tokens,
                         cache_creation_input_tokens, cache_read_input_tokens,
                         stop_reason, duration_ms, turn_id)

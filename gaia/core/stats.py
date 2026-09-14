@@ -3,7 +3,7 @@
 Two kinds of number live here. Product counts are derived on read from the
 domain tables — counting them into a metrics table would duplicate the source
 of truth and drift from it the first time a row is deleted or merged. Model
-counts come from llm_calls, which holds the only thing the app would
+counts come from model_calls, which holds the only thing the app would
 otherwise discard.
 
 Aggregates only, by construction: nothing in this module selects a contact
@@ -71,7 +71,7 @@ async def collect(conn, days: int = 30) -> dict:
         """SELECT job, model, input_tokens, output_tokens,
                   cache_creation_input_tokens, cache_read_input_tokens,
                   stop_reason, created_at::date AS day, user_id
-           FROM llm_calls
+           FROM model_calls
            WHERE created_at >= now() - make_interval(days => %(days)s)""",
         window,
     )
@@ -111,7 +111,7 @@ async def collect(conn, days: int = 30) -> dict:
     # turns and must not be counted as one-call ones.
     cur = await conn.execute(
         """SELECT calls, count(*) AS turns
-           FROM (SELECT turn_id, count(*) AS calls FROM llm_calls
+           FROM (SELECT turn_id, count(*) AS calls FROM model_calls
                  WHERE turn_id IS NOT NULL
                    AND created_at >= now() - make_interval(days => %(days)s)
                  GROUP BY turn_id) per_turn

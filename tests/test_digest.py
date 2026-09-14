@@ -251,7 +251,7 @@ async def test_composing_a_digest_is_recorded_against_the_recipient(migrated):
 
     async with migrated.connection() as conn:
         conn.row_factory = dict_row
-        cur = await conn.execute("SELECT job, user_id, model, turn_id FROM llm_calls")
+        cur = await conn.execute("SELECT job, user_id, model, turn_id FROM model_calls")
         rows = await cur.fetchall()
 
     assert len(rows) == 1

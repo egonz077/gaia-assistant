@@ -227,7 +227,7 @@ async def test_each_iteration_of_a_turn_is_recorded(migrated):
 
     async with migrated.connection() as conn:
         conn.row_factory = dict_row
-        cur = await conn.execute("SELECT job, user_id, turn_id FROM llm_calls")
+        cur = await conn.execute("SELECT job, user_id, turn_id FROM model_calls")
         rows = await cur.fetchall()
 
     assert len(rows) == 2, "two model calls must produce two rows"

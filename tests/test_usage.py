@@ -56,7 +56,7 @@ async def test_one_call_writes_one_row(migrated, ana):
         stop_reason="end_turn", duration_ms=1234,
     )
 
-    rows = await _rows(migrated, "SELECT * FROM llm_calls")
+    rows = await _rows(migrated, "SELECT * FROM model_calls")
 
     assert len(rows) == 1
     assert rows[0]["job"] == "turn"
@@ -77,7 +77,7 @@ async def test_a_job_with_no_user_is_allowed(migrated):
         usage=FakeUsage(), stop_reason="end_turn", duration_ms=10,
     )
 
-    row = (await _rows(migrated, "SELECT job, user_id FROM llm_calls"))[0]
+    row = (await _rows(migrated, "SELECT job, user_id FROM model_calls"))[0]
     assert row["job"] == "consolidation"
     assert row["user_id"] is None
 
@@ -95,7 +95,7 @@ async def test_a_usage_object_without_cache_fields_records_zeros(migrated, ana):
         stop_reason=None, duration_ms=None,
     )
 
-    row = (await _rows(migrated, "SELECT * FROM llm_calls"))[0]
+    row = (await _rows(migrated, "SELECT * FROM model_calls"))[0]
     assert row["cache_creation_input_tokens"] == 0
     assert row["cache_read_input_tokens"] == 0
     assert row["stop_reason"] is None
@@ -110,7 +110,7 @@ async def test_a_turn_id_is_stored_when_given(migrated, ana):
         stop_reason="end_turn", duration_ms=1, turn_id=turn,
     )
 
-    assert (await _rows(migrated, "SELECT turn_id FROM llm_calls"))[0]["turn_id"] == turn
+    assert (await _rows(migrated, "SELECT turn_id FROM model_calls"))[0]["turn_id"] == turn
 
 
 async def test_a_database_failure_is_swallowed(migrated, ana):
@@ -133,4 +133,4 @@ async def test_a_garbage_usage_object_is_swallowed(migrated, ana):
         usage=object(), stop_reason=None, duration_ms=None,
     )
 
-    assert await _rows(migrated, "SELECT * FROM llm_calls") == []
+    assert await _rows(migrated, "SELECT * FROM model_calls") == []

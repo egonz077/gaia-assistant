@@ -235,7 +235,7 @@ ssh gaia 'cd /opt/gaia-assistant && docker compose exec -T app \
 ```
 
 The report carries **aggregates only** — no contact names, no meeting text — so
-it is safe to screenshot and send. `llm_calls` is the one table in the schema
+it is safe to screenshot and send. `model_calls` is the one table in the schema
 with nowhere to put a client in it.
 
 The number worth watching first is the **cache hit rate**. `core/llm.py`'s
@@ -286,7 +286,7 @@ docker compose exec -T db psql -U gaia -d gaia
 ```
 
 Tables: `users`, `contacts`, `meetings`, `meeting_contacts`, `commitments`,
-`leads`, `memory_chunks`, `messages`, `llm_calls`.
+`leads`, `memory_chunks`, `messages`, `model_calls`.
 
 ---
 

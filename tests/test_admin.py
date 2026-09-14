@@ -165,7 +165,7 @@ async def test_stats_prints_totals_and_the_cache_hit_rate(migrated, capsys):
     async with tx(migrated) as conn:
         ana = await users_db.create_user(conn, name="Ana", wa_id="13055550001")
         await conn.execute(
-            """INSERT INTO llm_calls (job, user_id, model, input_tokens, output_tokens,
+            """INSERT INTO model_calls (job, user_id, model, input_tokens, output_tokens,
                                       cache_creation_input_tokens, cache_read_input_tokens)
                VALUES ('turn', %s, 'claude-opus-5', 100, 10, 300, 600)""",
             (ana.id,),
@@ -193,7 +193,7 @@ async def test_stats_honours_the_days_window(migrated, capsys):
     async with tx(migrated) as conn:
         ana = await users_db.create_user(conn, name="Ana", wa_id="13055550001")
         await conn.execute(
-            """INSERT INTO llm_calls (job, user_id, model, input_tokens, output_tokens,
+            """INSERT INTO model_calls (job, user_id, model, input_tokens, output_tokens,
                                       created_at)
                VALUES ('turn', %s, 'claude-opus-5', 100, 10, now() - interval '10 days')""",
             (ana.id,),

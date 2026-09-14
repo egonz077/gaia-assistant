@@ -43,7 +43,7 @@ async def test_failing_migration_rolls_back_batch_and_does_not_leak_the_lock(
     assert second == ["001_ok.sql"]
 
 
-async def test_llm_calls_has_no_visibility_column(pool):
+async def test_model_calls_has_no_visibility_column(pool):
     """Telemetry is the one table anyone may read: it holds counts and no
     text, which is what makes the report safe to screenshot. A visibility
     column would also break test_scope.py's tripwire, which asserts that the
@@ -52,7 +52,7 @@ async def test_llm_calls_has_no_visibility_column(pool):
     async with pool.connection() as conn:
         cur = await conn.execute(
             """SELECT column_name FROM information_schema.columns
-               WHERE table_schema = 'public' AND table_name = 'llm_calls'"""
+               WHERE table_schema = 'public' AND table_name = 'model_calls'"""
         )
         columns = {r[0] for r in await cur.fetchall()}
 
@@ -60,6 +60,9 @@ async def test_llm_calls_has_no_visibility_column(pool):
         "id", "job", "user_id", "model", "input_tokens", "output_tokens",
         "cache_creation_input_tokens", "cache_read_input_tokens",
         "stop_reason", "duration_ms", "turn_id", "created_at",
+        # Added by 004 for transcription, which bills per second of audio
+        # rather than per token.
+        "audio_seconds",
     }
     assert "visibility" not in columns
 
@@ -75,10 +78,45 @@ async def test_deleting_a_user_keeps_their_telemetry(pool):
         )
         uid = (await cur.fetchone())[0]
         await conn.execute(
-            """INSERT INTO llm_calls (job, user_id, model, input_tokens, output_tokens)
+            """INSERT INTO model_calls (job, user_id, model, input_tokens, output_tokens)
                VALUES ('turn', %s, 'claude-opus-5', 10, 5)""",
             (uid,),
         )
         await conn.execute("DELETE FROM users WHERE id = %s", (uid,))
-        cur = await conn.execute("SELECT user_id FROM llm_calls")
+        cur = await conn.execute("SELECT user_id FROM model_calls")
         assert (await cur.fetchone())[0] is None
+
+
+async def test_model_calls_replaces_model_calls_and_carries_audio_seconds(pool):
+    """Renamed because Nova-3, which transcribes voice notes, is an ASR model
+    and not an LLM — the old name goes wrong the moment a transcription row
+    lands in it. audio_seconds is NULL for token-billed calls; cost branches on
+    which unit the row carries."""
+    await run_migrations(pool)
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """SELECT table_name FROM information_schema.tables
+               WHERE table_schema = 'public' AND table_name IN ('llm_calls','model_calls')"""
+        )
+        tables = {r[0] for r in await cur.fetchall()}
+        cur = await conn.execute(
+            """SELECT column_name FROM information_schema.columns
+               WHERE table_name = 'model_calls' AND column_name = 'audio_seconds'"""
+        )
+        has_audio = await cur.fetchone() is not None
+
+    assert tables == {"model_calls"}, "model_calls must be gone, not duplicated"
+    assert has_audio
+
+
+async def test_the_rename_preserves_existing_rows(pool):
+    """The table is young but not empty in production. A rename that loses rows
+    is a data-loss bug wearing a refactor's clothes."""
+    await run_migrations(pool)
+    async with pool.connection() as conn:
+        await conn.execute(
+            """INSERT INTO model_calls (job, model, input_tokens, output_tokens)
+               VALUES ('turn', 'claude-opus-5', 10, 5)"""
+        )
+        cur = await conn.execute("SELECT count(*) FROM model_calls")
+        assert (await cur.fetchone())[0] == 1

@@ -33,7 +33,7 @@ def test_every_model_the_app_can_be_configured_with_has_a_price():
 
 async def test_collect_totals_tokens_and_cost_by_job(conn, ana):
     await conn.execute(
-        """INSERT INTO llm_calls (job, user_id, model, input_tokens, output_tokens)
+        """INSERT INTO model_calls (job, user_id, model, input_tokens, output_tokens)
            VALUES ('turn', %(u)s, 'claude-opus-5', 1000, 100),
                   ('turn', %(u)s, 'claude-opus-5', 2000, 200),
                   ('digest', %(u)s, 'claude-sonnet-5', 500, 50)""",
@@ -54,7 +54,7 @@ async def test_collect_reports_the_cache_hit_rate(conn, ana):
     """cache_read / (cache_read + cache_creation + input) — the number that
     settles whether the _system_blocks breakpoint design pays off."""
     await conn.execute(
-        """INSERT INTO llm_calls (job, user_id, model, input_tokens, output_tokens,
+        """INSERT INTO model_calls (job, user_id, model, input_tokens, output_tokens,
                                   cache_creation_input_tokens, cache_read_input_tokens)
            VALUES ('turn', %s, 'claude-opus-5', 100, 10, 300, 600)""",
         (ana.id,),
@@ -70,7 +70,7 @@ async def test_collect_reports_the_calls_per_turn_distribution(conn, ana):
     so the tail of this distribution is the part worth seeing. Rows with a
     NULL turn_id are single-call jobs, not one-call turns."""
     await conn.execute(
-        """INSERT INTO llm_calls (job, user_id, model, input_tokens, output_tokens, turn_id)
+        """INSERT INTO model_calls (job, user_id, model, input_tokens, output_tokens, turn_id)
            VALUES ('turn', %(u)s, 'claude-opus-5', 1, 1, '11111111-1111-1111-1111-111111111111'),
                   ('turn', %(u)s, 'claude-opus-5', 1, 1, '11111111-1111-1111-1111-111111111111'),
                   ('turn', %(u)s, 'claude-opus-5', 1, 1, '22222222-2222-2222-2222-222222222222'),
@@ -117,7 +117,7 @@ async def test_collect_counts_meetings_and_their_commitments(conn, ana):
 
 async def test_collect_ignores_rows_outside_the_window(conn, ana):
     await conn.execute(
-        """INSERT INTO llm_calls (job, user_id, model, input_tokens, output_tokens, created_at)
+        """INSERT INTO model_calls (job, user_id, model, input_tokens, output_tokens, created_at)
            VALUES ('turn', %s, 'claude-opus-5', 1000, 100, now() - interval '60 days')""",
         (ana.id,),
     )
@@ -132,7 +132,7 @@ async def test_an_unknown_model_is_named_in_the_output(conn, ana):
     model has no rate card, so a silently-zero cost cannot be mistaken for a
     cheap one."""
     await conn.execute(
-        """INSERT INTO llm_calls (job, user_id, model, input_tokens, output_tokens)
+        """INSERT INTO model_calls (job, user_id, model, input_tokens, output_tokens)
            VALUES ('turn', %s, 'claude-from-the-future', 1000, 100)""",
         (ana.id,),
     )
