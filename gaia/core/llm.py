@@ -1,7 +1,10 @@
 import logging
+import time
 from collections.abc import Sequence
+from uuid import uuid4
 
 from gaia.capabilities.base import registry as default_registry
+from gaia.core import usage as usage_mod
 from gaia.core.config import settings
 from gaia.core.models import User
 
@@ -60,8 +63,14 @@ async def run_agent(
     reg = registry or default_registry
     messages = list(messages)
     system_blocks = _system_blocks(system)
+    # One id per turn, shared by every iteration of this loop. Nothing else on
+    # the row can group them, and the distribution is worth having:
+    # MAX_ITERATIONS is the cap, and a turn that reaches it returns
+    # FALLBACK_TEXT rather than an answer.
+    turn_id = uuid4()
 
     for _ in range(MAX_ITERATIONS):
+        started = time.monotonic()
         response = await client.messages.create(
             model=settings.model,
             max_tokens=MAX_TOKENS,
@@ -70,6 +79,19 @@ async def run_agent(
             tools=tool_defs,
             messages=messages,
         )
+        # Guarded here as well as inside record(): record() swallowing its own
+        # errors does not protect this turn from one raised on the way in. A
+        # turn that answered correctly must not become an apology because a
+        # metrics insert failed.
+        try:
+            await usage_mod.record(
+                pool, job="turn", user=user, model=settings.model,
+                usage=response.usage, stop_reason=response.stop_reason,
+                duration_ms=int((time.monotonic() - started) * 1000),
+                turn_id=turn_id,
+            )
+        except Exception:
+            log.exception("could not record usage for a turn")
 
         if response.stop_reason == "refusal":
             log.warning("model refused for user %s", user.id)

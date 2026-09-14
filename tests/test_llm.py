@@ -198,3 +198,59 @@ async def test_the_agent_loop_uses_the_butlers_model(pool, ana):
     await run_agent(client, pool, ana, [{"role": "user", "content": "hi"}], "sys", [])
 
     assert client.requests[0]["model"] == settings.model
+
+
+async def test_each_iteration_of_a_turn_is_recorded(migrated):
+    """One row per model call, not per turn. A turn makes up to
+    MAX_ITERATIONS calls, and the per-iteration breakdown is the only view
+    that shows cache behaviour: the first call pays for cache creation, the
+    later ones should read.
+
+    Uses a committed user for the same reason tests/test_usage.py does —
+    record() inserts on another pooled connection and a foreign key failure
+    there is swallowed, leaving a test that asserts nothing.
+    """
+    from psycopg.rows import dict_row
+
+    from gaia.core.db import users as users_db
+    from gaia.core.db.pool import tx
+
+    async with tx(migrated) as conn:
+        user = await users_db.create_user(conn, name="Ana", wa_id="13055559001")
+
+    client = FakeAnthropic([
+        FakeResponse([ToolUseBlock("t1", "nope", {})], stop_reason="tool_use"),
+        FakeResponse([TextBlock("done")]),
+    ])
+
+    await run_agent(client, migrated, user, [{"role": "user", "content": "hi"}], "sys", [])
+
+    async with migrated.connection() as conn:
+        conn.row_factory = dict_row
+        cur = await conn.execute("SELECT job, user_id, turn_id FROM llm_calls")
+        rows = await cur.fetchall()
+
+    assert len(rows) == 2, "two model calls must produce two rows"
+    assert all(r["job"] == "turn" and r["user_id"] == user.id for r in rows)
+    assert rows[0]["turn_id"] == rows[1]["turn_id"], (
+        "both calls belong to one turn, so the calls-per-turn distribution "
+        "must be able to group them"
+    )
+
+
+async def test_a_recording_failure_does_not_cost_the_reply(migrated, ana, monkeypatch):
+    """The rule from usage.record, asserted at the call site: if telemetry is
+    broken the user still gets their answer. Guarded in both places on
+    purpose — record() swallowing its own errors does not protect the turn
+    from an exception raised on the way in."""
+    async def boom(*a, **kw):
+        raise RuntimeError("telemetry is down")
+
+    monkeypatch.setattr("gaia.core.llm.usage_mod.record", boom)
+    client = FakeAnthropic([FakeResponse([TextBlock("still answered")])])
+
+    reply = await run_agent(
+        client, migrated, ana, [{"role": "user", "content": "hi"}], "sys", []
+    )
+
+    assert reply == "still answered"

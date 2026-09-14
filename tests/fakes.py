@@ -18,9 +18,20 @@ class ToolUseBlock:
 
 
 @dataclass
+class FakeUsage:
+    """Every real response carries usage. The fake must too, or wiring
+    telemetry into the agent loop breaks every test that drives it."""
+    input_tokens: int = 100
+    output_tokens: int = 20
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+
+@dataclass
 class FakeResponse:
     content: list
     stop_reason: str = "end_turn"
+    usage: FakeUsage = field(default_factory=FakeUsage)
 
 
 class FakeAnthropic:
