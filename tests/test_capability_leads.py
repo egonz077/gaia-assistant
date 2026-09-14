@@ -4,6 +4,7 @@ from gaia.capabilities.leads import (
     create_lead,
     list_commitments,
     query_leads,
+    update_commitment,
     update_lead,
 )
 from gaia.core.db import meetings as meetings_db
@@ -93,7 +94,7 @@ def test_capability_is_public():
     assert CAPABILITY.allowed_roles is None
     assert {t.name for t in CAPABILITY.tools} == {
         "create_lead", "query_leads", "update_lead",
-        "list_commitments", "complete_commitments",
+        "list_commitments", "complete_commitments", "update_commitment",
     }
 
 
@@ -116,3 +117,72 @@ async def test_commitment_ids_arrive_from_the_model_as_strings(conn, ana):
     ids = [str(r["id"]) for r in (await list_commitments(conn, ana, {}))["commitments"]]
 
     assert (await complete_commitments(conn, ana, {"commitment_ids": ids}))["completed"] == 1
+
+
+async def test_update_commitment_fixes_a_misheard_name(conn, ana):
+    """The case that prompted this: a voice note is transcribed, the assistant
+    reads it back, and the user says it was Cesia not Sasha."""
+    await _commitments(conn, ana, "Call Sasha about the closing")
+    cid = (await list_commitments(conn, ana, {}))["commitments"][0]["id"]
+
+    result = await update_commitment(
+        conn, ana, {"commitment_id": str(cid),
+                    "description": "Call Cesia about the closing"}
+    )
+
+    assert result["updated"] is True
+    rows = (await list_commitments(conn, ana, {}))["commitments"]
+    assert rows[0]["description"] == "Call Cesia about the closing"
+
+
+async def test_update_commitment_can_attach_a_contact_by_name(conn, ana):
+    """Creates the contact if new, reuses it if not — the same behaviour
+    create_lead has, so a correction cannot fork the address book."""
+    await _commitments(conn, ana, "Call about the closing")
+    cid = (await list_commitments(conn, ana, {}))["commitments"][0]["id"]
+
+    await update_commitment(
+        conn, ana, {"commitment_id": str(cid), "contact_name": "Cesia Ramirez"}
+    )
+
+    assert (await list_commitments(conn, ana, {}))["commitments"][0]["contact"] == (
+        "Cesia Ramirez"
+    )
+
+
+async def test_update_commitment_reopens_one_closed_by_mistake(conn, ana):
+    await _commitments(conn, ana, "Call the attorney")
+    cid = (await list_commitments(conn, ana, {}))["commitments"][0]["id"]
+    await complete_commitments(conn, ana, {"commitment_ids": [str(cid)]})
+    assert (await list_commitments(conn, ana, {}))["commitments"] == []
+
+    result = await update_commitment(
+        conn, ana, {"commitment_id": str(cid), "reopen": True}
+    )
+
+    assert result["updated"] is True
+    assert len((await list_commitments(conn, ana, {}))["commitments"]) == 1
+
+
+async def test_update_commitment_says_so_when_nothing_matched(conn, ana):
+    """Mirrors update_lead: the model must be told it changed nothing, or it
+    will tell the user it fixed something it did not."""
+    from uuid import uuid4
+
+    result = await update_commitment(
+        conn, ana, {"commitment_id": str(uuid4()), "description": "x"}
+    )
+
+    assert result["updated"] is False
+    assert "note" in result
+
+
+async def test_the_capability_exposes_the_editing_tool():
+    assert "update_commitment" in {t.name for t in CAPABILITY.tools}
+
+
+def test_the_prompt_tells_the_model_corrections_can_be_applied():
+    """Half the blind spot was the missing tool; the other half is the model
+    knowing it exists. It already asks the user to confirm what it understood,
+    so it has to know where the answer goes."""
+    assert "update_commitment" in CAPABILITY.prompt_fragment

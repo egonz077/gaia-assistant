@@ -46,6 +46,76 @@ async def query(conn, user: User, limit: int = 25) -> list[dict]:
     return await cur.fetchall()
 
 
+class _Clear:
+    """Sentinel for "set this column to NULL".
+
+    `None` already means "leave this field alone" in an update built from
+    optional keyword arguments, so clearing a due date needs a value of its
+    own. Without it, "actually there is no deadline on that one" is not
+    expressible at all.
+    """
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "CLEAR"
+
+
+CLEAR = _Clear()
+
+_UPDATABLE = ("description", "due_at", "contact_id")
+
+
+async def update(
+    conn,
+    user: User,
+    commitment_id: UUID,
+    *,
+    description: str | None = None,
+    due_at=None,
+    contact_id: UUID | None = None,
+    reopen: bool = False,
+) -> bool:
+    """Correct a commitment. Returns True iff a row was owned and changed.
+
+    The assistant's whole correction model is to read back what it understood
+    and ask about anything ambiguous — and until this existed it could ask and
+    then do nothing with the answer. Voice notes made that sharper: a misheard
+    name is exactly what the confirmation is meant to catch.
+
+    `reopen` undoes a completion. Closing used to be one-way, which made "I
+    closed the wrong one" the single correction with no path back.
+
+    A no-op returns False rather than True. Reporting success for a call that
+    changed nothing would let the assistant tell the user it updated something
+    it did not.
+    """
+    fields = {"description": description, "due_at": due_at, "contact_id": contact_id}
+    sets: list[str] = []
+    params: dict = {"id": commitment_id, "uid": user.id}
+
+    for key in _UPDATABLE:
+        value = fields[key]
+        if value is None:
+            continue
+        if value is CLEAR:
+            sets.append(f"{key} = NULL")
+        else:
+            sets.append(f"{key} = %({key})s")
+            params[key] = value
+
+    if reopen:
+        sets.append("done_at = NULL")
+
+    if not sets:
+        return False
+
+    cur = await conn.execute(
+        f"""UPDATE commitments SET {', '.join(sets)}
+            WHERE id = %(id)s AND user_id = %(uid)s RETURNING id""",
+        params,
+    )
+    return await cur.fetchone() is not None
+
+
 async def complete(conn, user: User, ids: list[UUID]) -> list[UUID]:
     """Close one or many, and report which ones actually closed.
 

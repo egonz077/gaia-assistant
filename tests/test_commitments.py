@@ -121,3 +121,94 @@ async def test_query_carries_the_contact_and_due_date(conn, ana):
     row = (await commitments_db.query(conn, ana))[0]
     assert row["contact"] == "Marta Delgado"
     assert row["due_at"] is not None
+
+
+async def test_update_changes_the_description(conn, ana):
+    """The correction path. The assistant reads a commitment back, hears "no,
+    that's not what I said", and needs somewhere to put the answer."""
+    await _file(conn, ana, "Call Sasha")
+    row = (await commitments_db.query(conn, ana))[0]
+
+    assert await commitments_db.update(
+        conn, ana, row["id"], description="Call Cesia"
+    ) is True
+    assert (await commitments_db.query(conn, ana))[0]["description"] == "Call Cesia"
+
+
+async def test_update_changes_the_due_date(conn, ana):
+    await _file(conn, ana, "Send comps", due_in_days=7)
+    row = (await commitments_db.query(conn, ana))[0]
+    new_due = datetime.now(timezone.utc) + timedelta(days=2)
+
+    assert await commitments_db.update(conn, ana, row["id"], due_at=new_due) is True
+
+    assert (await commitments_db.query(conn, ana))[0]["due_at"] == new_due
+
+
+async def test_update_can_clear_a_due_date(conn, ana):
+    """"Actually there's no deadline on that one" has to be expressible. A
+    sentinel is needed because None already means "leave this field alone"."""
+    await _file(conn, ana, "Send comps", due_in_days=7)
+    row = (await commitments_db.query(conn, ana))[0]
+
+    assert await commitments_db.update(
+        conn, ana, row["id"], due_at=commitments_db.CLEAR
+    ) is True
+
+    assert (await commitments_db.query(conn, ana))[0]["due_at"] is None
+
+
+async def test_update_leaves_untouched_fields_alone(conn, ana):
+    """Passing one field must not blank the others."""
+    await _file(conn, ana, "Send comps", due_in_days=3)
+    row = (await commitments_db.query(conn, ana))[0]
+
+    await commitments_db.update(conn, ana, row["id"], description="Send comps today")
+
+    after = (await commitments_db.query(conn, ana))[0]
+    assert after["description"] == "Send comps today"
+    assert after["due_at"] == row["due_at"]
+
+
+async def test_reopen_brings_a_closed_commitment_back(conn, ana):
+    """"I closed the wrong one" is the most expensive correction of the set,
+    and until now it was the one with no way back."""
+    await _file(conn, ana, "Call the attorney")
+    row = (await commitments_db.query(conn, ana))[0]
+    await commitments_db.complete(conn, ana, [row["id"]])
+    assert await commitments_db.query(conn, ana) == []
+
+    assert await commitments_db.update(conn, ana, row["id"], reopen=True) is True
+
+    assert [c["description"] for c in await commitments_db.query(conn, ana)] == [
+        "Call the attorney"
+    ]
+
+
+async def test_update_refuses_a_colleagues_commitment(conn, ana, sofia):
+    await _file(conn, sofia, "Sofia's task")
+    hers = (await commitments_db.query(conn, sofia))[0]
+
+    assert await commitments_db.update(
+        conn, ana, hers["id"], description="hijacked"
+    ) is False
+    assert (await commitments_db.query(conn, sofia))[0]["description"] == "Sofia's task"
+
+
+async def test_update_reports_false_for_an_unknown_id(conn, ana):
+    """The caller must be told nothing happened rather than assuming success —
+    the same contract meetings.set_visibility has."""
+    from uuid import uuid4
+
+    assert await commitments_db.update(
+        conn, ana, uuid4(), description="nothing to update"
+    ) is False
+
+
+async def test_update_with_nothing_to_change_reports_false(conn, ana):
+    """A no-op is not a success. Reporting True would let the assistant say
+    "updated" when it changed nothing."""
+    await _file(conn, ana, "Send comps")
+    row = (await commitments_db.query(conn, ana))[0]
+
+    assert await commitments_db.update(conn, ana, row["id"]) is False
