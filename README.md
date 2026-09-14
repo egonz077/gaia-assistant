@@ -49,6 +49,7 @@ gaia/
     images.py          downscale photos to the model's resolution ceiling
     llm.py             agent loop, prompt caching, stop-reason handling
     embeddings.py      Voyage embeddings
+    transcription.py   Deepgram: voice notes to text, roster as keyterms
     admin.py           CLI: add-user, list-users, deactivate, merge-contacts
     db/
       pool.py          psycopg async pool, tx() context manager
@@ -124,6 +125,11 @@ all, so their first digest has no other path to delivery.
 Increment 2 is the scheduler: Google Calendar, proposing free times, creating
 events on confirmation, and surfacing conflicts in the digest. Split out rather
 than deferred, because its schedule depends on Google project setup rather than
-on us. Also queued: voice notes through the same pipeline, and a consolidation
-pass that rewrites `contacts.profile` into clean prose instead of the
-append-only accretion it is today.
+on us. Also queued: a consolidation pass that rewrites `contacts.profile` into
+clean prose instead of the append-only accretion it is today.
+
+Voice notes have landed. A developer can dictate their notes walking out of a
+meeting and they are filed like any other. Claude accepts no audio input, so
+they are transcribed first — Deepgram Nova-3, with the sender's contact roster
+sent as keyterms, because general English is solved and rare client names are
+not. See `docs/superpowers/specs/2026-09-13-voice-notes-design.md`.
