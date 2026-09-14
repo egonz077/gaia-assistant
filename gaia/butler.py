@@ -3,6 +3,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from gaia.capabilities.base import registry
+from gaia.core import transcription
 from gaia.core.db import contacts as contacts_db
 from gaia.core.db import messages as messages_db
 from gaia.core.db import users as users_db
@@ -26,6 +27,10 @@ extract a short summary, the people involved, commitments made, and any follow-u
 them with your tools. Echo back what you understood and ask {name} to confirm anything ambiguous: \
 names, numbers, dates. Give the weekday whenever you name a date — "Friday, Sept 11" — so a wrong \
 day is obvious at a glance rather than acted on.
+
+A message beginning "[voice note]" is a machine transcription of dictated audio. It hears \
+ordinary English well and mishears names — check every name in it against the people listed \
+below, and ask {name} about any that do not match one.
 
 Answer questions about past meetings, leads and contacts using your tools. Never contact third \
 parties.
@@ -117,6 +122,12 @@ async def _apologize(wa, user: User) -> None:
 
 PHOTO_CAPTION_FALLBACK = "Here are my meeting notes."
 PHOTO_FAILED_NOTE = "[a photo in this message could not be downloaded]"
+VOICE_FAILED_NOTE = "[a voice note in this message could not be transcribed]"
+
+# Labelled rather than passed as bare text. The model has to know this is a
+# machine transcription — it is the only way the echo-back can catch a misheard
+# name — and her history must not imply she typed it.
+VOICE_PREFIX = "[voice note] "
 
 
 def transcript_text(message: dict) -> str:
@@ -125,6 +136,8 @@ def transcript_text(message: dict) -> str:
     gets written rather than a bare marker."""
     if message["type"] == "image":
         return f"[photo] {message.get('caption') or PHOTO_CAPTION_FALLBACK}"
+    if message["type"] == "audio":
+        return f"{VOICE_PREFIX}{message.get('transcript', '')}".rstrip()
     return message["text"]
 
 
@@ -191,6 +204,33 @@ async def _build_blocks(conn, user: User, batch: list[dict], wa) -> tuple[list[d
                 "type": "text",
                 "text": message.get("caption") or PHOTO_CAPTION_FALLBACK,
             })
+        elif message["type"] == "audio":
+            try:
+                audio, mime_type = await wa.download_audio(message["audio_id"])
+                # Ownership- and visibility-scoped, so only the names this
+                # developer actually works with leave the box — never the
+                # company's whole contact book.
+                keyterms = await contacts_db.roster(conn, user, limit=100)
+                text, _seconds = await transcription.transcribe(
+                    audio, mime_type, keyterms
+                )
+            except Exception:
+                # One failed note must not cost the burst. Dictating four
+                # notes on the walk to the car and losing all of them because
+                # the third hit a network blip is the failure this prevents —
+                # the same rule the photo path above follows.
+                log.exception(
+                    "could not transcribe audio %s for user %s",
+                    message["audio_id"], user.id,
+                )
+                blocks.append({"type": "text", "text": VOICE_FAILED_NOTE})
+                await messages_db.set_content(
+                    conn, user, message["id"], VOICE_FAILED_NOTE
+                )
+                continue
+            labelled = f"{VOICE_PREFIX}{text}"
+            blocks.append({"type": "text", "text": labelled})
+            await messages_db.set_content(conn, user, message["id"], labelled)
         else:
             blocks.append({"type": "text", "text": message["text"]})
     return blocks, wa_ids

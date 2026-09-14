@@ -373,3 +373,111 @@ async def test_a_failing_typing_indicator_does_not_cost_the_reply(wa_user, monke
     await handle_turn(wa_user, batch, wa)
 
     assert wa.sent == [(wa_user.wa_id, "Got it.")]
+
+
+async def test_a_voice_note_becomes_a_labelled_text_block(conn, ana, monkeypatch):
+    """Labelled, not bare. The model must know the text is a machine
+    transcription so it can check names against the roster, and the message log
+    must not imply she typed it."""
+    from gaia import butler
+    from tests.fakes import FakeWhatsApp
+
+    async def fake_transcribe(audio, mime_type, keyterms):
+        return "Met Marta Delgado at the Coral Gables listing.", 12.5
+
+    monkeypatch.setattr("gaia.butler.transcription.transcribe", fake_transcribe)
+    batch = [{"id": "wamid.1", "type": "audio", "audio_id": "m1",
+              "mime_type": "audio/ogg", "voice": True}]
+
+    blocks, wa_ids = await butler._build_blocks(conn, ana, batch, FakeWhatsApp())
+
+    assert blocks == [{
+        "type": "text",
+        "text": "[voice note] Met Marta Delgado at the Coral Gables listing.",
+    }]
+    assert wa_ids == ["wamid.1"]
+
+
+async def test_the_roster_is_sent_as_keyterms(conn, ana, monkeypatch):
+    """The whole trick. No ASR model has seen 'Okonkwo'; the roster is what
+    makes it survive."""
+    from gaia import butler
+    from gaia.core.db import meetings as meetings_db
+    from tests.fakes import FakeWhatsApp
+
+    seen = {}
+
+    async def fake_transcribe(audio, mime_type, keyterms):
+        seen["keyterms"] = keyterms
+        return "text", 1.0
+
+    await meetings_db.save(conn, ana, summary="s", source="text",
+                           contact_names=["Marta Delgado", "Okonkwo"])
+    monkeypatch.setattr("gaia.butler.transcription.transcribe", fake_transcribe)
+    batch = [{"id": "w1", "type": "audio", "audio_id": "m1",
+              "mime_type": "audio/ogg", "voice": True}]
+
+    await butler._build_blocks(conn, ana, batch, FakeWhatsApp())
+
+    assert "Okonkwo" in seen["keyterms"]
+    assert "Marta Delgado" in seen["keyterms"]
+
+
+async def test_a_failed_transcription_does_not_lose_the_rest_of_the_burst(
+    conn, ana, monkeypatch
+):
+    """Same rule as an unreadable photo: one bad item becomes a visible note,
+    never a dropped batch. Dictating four notes and losing all of them because
+    the third had a network blip is the failure this prevents."""
+    from gaia import butler
+    from gaia.core.transcription import TranscriptionError
+    from tests.fakes import FakeWhatsApp
+
+    async def boom(audio, mime_type, keyterms):
+        raise TranscriptionError("vendor down")
+
+    monkeypatch.setattr("gaia.butler.transcription.transcribe", boom)
+    batch = [
+        {"id": "w1", "type": "audio", "audio_id": "m1",
+         "mime_type": "audio/ogg", "voice": True},
+        {"id": "w2", "type": "text", "text": "and the comps are due Friday"},
+    ]
+
+    blocks, wa_ids = await butler._build_blocks(conn, ana, batch, FakeWhatsApp())
+
+    texts = [b["text"] for b in blocks]
+    assert butler.VOICE_FAILED_NOTE in texts
+    assert "and the comps are due Friday" in texts
+    assert wa_ids == ["w1", "w2"]
+
+
+async def test_a_failed_download_is_also_survivable(conn, ana):
+    """The vendor is not the only thing that can fail."""
+    from gaia import butler
+    from tests.fakes import FakeWhatsApp
+
+    batch = [{"id": "w1", "type": "audio", "audio_id": "m1",
+              "mime_type": "audio/ogg", "voice": True}]
+
+    blocks, _ = await butler._build_blocks(
+        conn, ana, batch, FakeWhatsApp(media_errors={"m1"})
+    )
+
+    assert blocks == [{"type": "text", "text": butler.VOICE_FAILED_NOTE}]
+
+
+def test_a_voice_note_reads_as_one_in_history():
+    from gaia import butler
+
+    assert butler.transcript_text(
+        {"type": "audio", "transcript": "Met Marta."}
+    ) == "[voice note] Met Marta."
+
+
+def test_the_prompt_warns_that_transcribed_names_may_be_wrong():
+    """The echo-back is the correction point, and it only works if the model
+    knows the names might be misheard."""
+    from gaia.butler import BASE_PROMPT
+
+    assert "[voice note]" in BASE_PROMPT
+    assert "mishear" in BASE_PROMPT.lower()
