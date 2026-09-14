@@ -69,6 +69,10 @@ docker compose -f docker-compose.yml -f deploy/compose.dev.yml up -d db
   `DOMAIN_TABLES`. `model_calls` deliberately has neither.
 - `tests/test_db_signatures.py` — everything in `gaia/core/db/` takes
   `(conn, user, ...)` unless explicitly exempted.
+- `tests/test_scope.py` — every read in `gaia/core/db/` either composes
+  `visible()` or is listed in `OWNERSHIP_SCOPED` **with a reason**. Injection
+  is not the risk here (psycopg parameterises every value); a new read that
+  quietly returns a colleague's client is. Adding a read forces the decision.
 - `tests/test_isolation.py` — parametrized over `DOMAIN_TABLES`; a new domain
   table with no coverage breaks the build rather than passing quietly.
 
