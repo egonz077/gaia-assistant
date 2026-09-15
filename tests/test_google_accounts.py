@@ -17,6 +17,7 @@ async def test_round_trip(conn, ana):
     assert got["google_email"] == "ana@gaiagroupdevelopment.com"
     assert got["refresh_token"] == "1//tok"
     assert got["revoked_at"] is None
+    assert got["revoked_notified_at"] is None
 
 
 async def test_stored_column_is_encrypted(conn, ana):
@@ -48,3 +49,27 @@ async def test_revoke_marks_rather_than_deletes(conn, ana):
     await ga.upsert(conn, ana, google_email="a@x.com", refresh_token="1//tok", scopes="s")
     await ga.revoke(conn, ana)
     assert (await ga.get(conn, ana))["revoked_at"] is not None
+
+
+async def test_mark_revoked_notified_stamps_it(conn, ana):
+    """A DATE (last_digest_on) can't answer "have we told them" -- only "what
+    day is it". This column is a fact of its own, set at the moment the
+    digest actually says the grant is gone."""
+    await ga.upsert(conn, ana, google_email="a@x.com", refresh_token="1//tok", scopes="s")
+    await ga.revoke(conn, ana)
+    assert (await ga.get(conn, ana))["revoked_notified_at"] is None
+
+    await ga.mark_revoked_notified(conn, ana)
+    assert (await ga.get(conn, ana))["revoked_notified_at"] is not None
+
+
+async def test_reconnect_clears_the_notified_flag_too(conn, ana):
+    """A second revocation after a reconnect is a new event and must be
+    announced again -- otherwise the flag from the first revocation silences
+    the digest about the second one forever."""
+    await ga.upsert(conn, ana, google_email="a@x.com", refresh_token="1//old", scopes="s")
+    await ga.revoke(conn, ana)
+    await ga.mark_revoked_notified(conn, ana)
+
+    await ga.upsert(conn, ana, google_email="a@x.com", refresh_token="1//new", scopes="s")
+    assert (await ga.get(conn, ana))["revoked_notified_at"] is None

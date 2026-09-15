@@ -50,17 +50,6 @@ them their Google Calendar disconnected and offer to send a fresh link."""
 
 
 async def due_users(conn, now_utc: datetime | None = None) -> list[User]:
-    return [user for user, _ in await _due_users_detailed(conn, now_utc)]
-
-
-async def _due_users_detailed(
-    conn, now_utc: datetime | None = None
-) -> list[tuple[User, date_cls | None]]:
-    """Same eligibility scan as due_users, but also hands back each user's
-    last_digest_on -- run_once needs it for calendar_section's once-only
-    revocation notice, and the row is already fetched below. Re-querying it a
-    second time in run_once would be reading a value this function already
-    holds."""
     now_utc = now_utc or datetime.now(timezone.utc)
     out = []
     for user in await users_db.list_users(conn):
@@ -96,7 +85,7 @@ async def _due_users_detailed(
             created_local = row["created_at"].astimezone(ZoneInfo(user.timezone))
             if row["last_digest_on"] is None and created_local.date() == local.date():
                 continue
-            out.append((user, row["last_digest_on"]))
+            out.append(user)
         except Exception:
             log.exception("skipping user %s while selecting digest recipients", user.id)
     return out
@@ -181,9 +170,7 @@ async def _http_client(http):
             yield own
 
 
-async def calendar_section(
-    conn, user: User, *, http, today: str, last_digest_on
-) -> dict | None:
+async def calendar_section(conn, user: User, *, http, today: str) -> dict | None:
     """Today's shape, or None.
 
     The calendar must never break the digest. This product's daily heartbeat
@@ -203,20 +190,21 @@ async def calendar_section(
                                        time_max=start + timedelta(days=1), http=http)
     except google.RevokedGrant:
         # Said out loud ONCE. A daily nag about an integration someone may have
-        # revoked deliberately is its own failure -- and last_digest_on already
-        # records when we last spoke, so knowing whether this is the first
-        # morning since the revocation needs no new column.
+        # revoked deliberately is its own failure. revoked_notified_at (not a
+        # last_digest_on comparison -- see google_accounts.mark_revoked_notified
+        # for why that was wrong) is the single source of truth for "have we
+        # already said this", stamped here, at the moment it is said.
         #
         # A user who never connected at all has no revoked_at and is never
         # nagged: they are not missing anything, they simply do not use it.
         from gaia.core.db import google_accounts as ga_db
 
         account = await ga_db.get(conn, user)
-        revoked_on = account["revoked_at"].date() if account and account["revoked_at"] else None
-        if revoked_on is None:
+        if account is None or account["revoked_at"] is None:
             return None
-        if last_digest_on is not None and revoked_on < last_digest_on:
+        if account["revoked_notified_at"] is not None:
             return None
+        await ga_db.mark_revoked_notified(conn, user)
         return {"revoked": True}
     except Exception:
         log.exception("calendar section failed for %s", user.id)
@@ -224,8 +212,11 @@ async def calendar_section(
 
     intervals = cal.busy_intervals(events)
     ids = [e["id"] for e in events if e.get("id")]
-    linked = {**await leads_db.by_event_ids(conn, user, ids),
-              **await commitments_db.by_event_ids(conn, user, ids)}
+    # Accumulated, not merged: create_event accepts a lead_id AND a
+    # commitment_id together, so one event can legitimately link to both, and
+    # {**leads, **commitments} let the commitment silently overwrite the lead.
+    about = (list((await leads_db.by_event_ids(conn, user, ids)).values())
+             + list((await commitments_db.by_event_ids(conn, user, ids)).values()))
     return {
         "overlaps": [
             {"a": a[0].strftime("%H:%M"), "b": b[0].strftime("%H:%M")}
@@ -235,25 +226,25 @@ async def calendar_section(
         # know how long "send comps to Marcel" takes, and inventing forty
         # minutes would make it confidently wrong.
         "free_minutes": conflicts.free_minutes(intervals, day=today, tz=tz),
-        "about": list(linked.values()),
+        "about": about,
     }
 
 
-async def send_digest(
-    conn, client, wa, user: User, pool, *, http=None, last_digest_on=None
-) -> bool:
-    """Returns whether anything was sent. A digest on an empty day trains
-    people to ignore the thread."""
+async def send_digest(conn, client, wa, user: User, pool, *, http=None) -> bool:
+    """Returns whether anything was sent. The rule is "nothing to say", not
+    "nothing due": an empty pipeline still deserves to hear about a
+    double-booked morning or a lapsed Google grant, so the calendar section
+    is computed before that decision is made, not after."""
     leads = await leads_db.due_for(conn, user)
     commitments = await commitments_db.open_for(conn, user)
-    if not leads and not commitments:
-        return False
 
     today = datetime.now(ZoneInfo(user.timezone)).date()
     async with _http_client(http) as h:
-        calendar = await calendar_section(
-            conn, user, http=h, today=today.isoformat(), last_digest_on=last_digest_on
-        )
+        calendar = await calendar_section(conn, user, http=h, today=today.isoformat())
+
+    calendar_has_something = bool(calendar) and (calendar.get("revoked") or calendar.get("overlaps"))
+    if not leads and not commitments and not calendar_has_something:
+        return False
 
     text = await compose_digest(client, user, leads, commitments, pool, calendar=calendar)
     if not text:
@@ -289,17 +280,15 @@ async def send_digest(
 async def run_once(pool, client, wa, *, http=None) -> int:
     sent = 0
     async with tx(pool) as conn:
-        due = await _due_users_detailed(conn)
-    for user, last_digest_on in due:
+        users = await due_users(conn)
+    for user in users:
         # Same rule as due_users: one user's failure — a Graph timeout, a bad
         # row, a model error — must not stop the rest of the company's
         # digests. Each already runs in its own transaction; this makes the
         # failure boundary match.
         try:
             async with tx(pool) as conn:
-                if await send_digest(
-                    conn, client, wa, user, pool, http=http, last_digest_on=last_digest_on
-                ):
+                if await send_digest(conn, client, wa, user, pool, http=http):
                     sent += 1
         except Exception:
             log.exception("digest failed for user %s", user.id)
