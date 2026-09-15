@@ -70,6 +70,13 @@ OWNERSHIP_SCOPED = {
     "gaia.core.db.messages.seen":
         "WhatsApp redelivery dedup, keyed by wa_msg_id. Roster-independent by "
         "design, which is why test_db_signatures exempts it too.",
+    "gaia.core.db.users.get_by_id":
+        "resolving the OAuth callback's state to the user who started the "
+        "flow. users carries no visibility column at all -- it is the table "
+        "visible() is defined in terms of.",
+    "gaia.core.db.users.get_email":
+        "one person's own Workspace address, compared against the account that "
+        "just consented. Ownership by definition.",
 }
 
 

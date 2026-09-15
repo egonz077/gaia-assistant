@@ -1,10 +1,12 @@
 import logging
+import urllib.parse
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
-from gaia.core import whatsapp
+from gaia.core import oauth_link, whatsapp
 from gaia.core.config import settings
+from gaia.core.db import google_accounts as ga_db
 from gaia.core.db import users as users_db
 from gaia.core.db.migrate import run_migrations
 from gaia.core.db.pool import get_pool, tx
@@ -80,3 +82,94 @@ async def inbound(request: Request) -> dict:
     # Returns before the agent loop runs. Meta retries slow webhooks and
     # eventually disables the subscription over them.
     return {"status": "ok"}
+
+
+CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned"
+
+# state -> user_id, for the few seconds a consent takes. In-process because a
+# restart mid-consent is a retry, not a data-loss event: the developer taps the
+# link again. A table would outlive the thing it describes.
+_PENDING_STATES: dict[str, str] = {}
+
+
+async def _exchange_code(code: str) -> dict:
+    """Swap an authorization code for a refresh token and the account's address.
+
+    Separated so tests can replace it: the alternative is an env var only tests
+    set, which this codebase does not do.
+    """
+    import httpx
+
+    redirect = f"https://{settings.domain}/oauth/callback"
+    async with httpx.AsyncClient(timeout=15) as http:
+        tok = (await http.post("https://oauth2.googleapis.com/token", data={
+            "code": code,
+            "client_id": settings.google_client_id,
+            "client_secret": settings.google_client_secret,
+            "redirect_uri": redirect,
+            "grant_type": "authorization_code",
+        })).json()
+        who = (await http.get(
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            headers={"Authorization": f"Bearer {tok['access_token']}"},
+        )).json()
+    return {"refresh_token": tok.get("refresh_token", ""),
+            "email": who.get("email", ""),
+            "scopes": tok.get("scope", "")}
+
+
+@app.get("/oauth/start")
+async def oauth_start(t: str = "") -> Response:
+    """Validates and redirects. Consumes NOTHING.
+
+    WhatsApp builds link previews by fetching URLs. If this consumed the
+    one-time token, Meta's fetcher would burn it before the developer ever
+    tapped the link and every connect attempt would fail, with nothing in the
+    logs to explain it. A preview fetcher gets a 307 to Google and achieves
+    nothing, because consent needs a human.
+    """
+    user_id = oauth_link.verify(t)
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="This link has expired. Ask Gaia for a new one.")
+
+    import secrets
+    state = secrets.token_urlsafe(24)
+    _PENDING_STATES[state] = str(user_id)
+    query = urllib.parse.urlencode({
+        "client_id": settings.google_client_id,
+        "redirect_uri": f"https://{settings.domain}/oauth/callback",
+        "response_type": "code",
+        "scope": CALENDAR_SCOPE,
+        "access_type": "offline",
+        "prompt": "consent",
+        "state": state,
+        # Additive, so the email increment's scopes join this grant rather than
+        # replacing it and silently dropping calendar access.
+        "include_granted_scopes": "true",
+    })
+    return Response(status_code=307,
+                    headers={"location": f"https://accounts.google.com/o/oauth2/v2/auth?{query}"})
+
+
+@app.get("/oauth/callback")
+async def oauth_callback(code: str = "", state: str = "") -> Response:
+    user_id = _PENDING_STATES.pop(state, None)
+    if user_id is None:
+        raise HTTPException(status_code=403, detail="That consent did not come from this server.")
+
+    result = await _exchange_code(code)
+    async with tx() as conn:
+        user = await users_db.get_by_id(conn, user_id)
+        if user is None:
+            raise HTTPException(status_code=403)
+        expected = await users_db.get_email(conn, user)
+        # Both checks, in this order. The domain is what keeps the app's
+        # Internal configuration true; the equality is what stops a forwarded
+        # link binding a colleague's account to this developer's identity.
+        if not expected or not result["email"].endswith("@" + settings.google_domain):
+            raise HTTPException(status_code=403, detail="That account cannot be connected.")
+        if result["email"].lower() != expected.lower():
+            raise HTTPException(status_code=403, detail="That is not the account we expected.")
+        await ga_db.upsert(conn, user, google_email=result["email"],
+                           refresh_token=result["refresh_token"], scopes=result["scopes"])
+    return Response(content="Calendar connected. You can close this tab.", media_type="text/plain")

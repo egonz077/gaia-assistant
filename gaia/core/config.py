@@ -46,6 +46,17 @@ class Settings(BaseSettings):
     #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     google_token_key: str = ""
 
+    # The OAuth client. Empty by default so a checkout without the Workspace
+    # integration still boots; the routes refuse rather than half-work.
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    # Every consenting account must be on this domain. It is also exactly what
+    # keeps the app's Internal configuration -- and with it the exemption from
+    # verification and the CASA assessment -- true. See research doc section 2.
+    google_domain: str = "gaiagroupdevelopment.com"
+    # Public origin, for building the OAuth redirect. Already in .env as DOMAIN.
+    domain: str = ""
+
     debounce_seconds: float = 3.0
 
 

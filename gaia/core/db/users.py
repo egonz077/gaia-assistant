@@ -48,6 +48,14 @@ async def set_email(conn, *, wa_id: str, email: str) -> bool:
     return await cur.fetchone() is not None
 
 
+async def get_by_id(conn, user_id) -> User | None:
+    cur = await conn.execute(
+        f"SELECT {_COLUMNS} FROM users WHERE id = %s AND active", (user_id,)
+    )
+    row = await cur.fetchone()
+    return _row_to_user(row) if row else None
+
+
 async def get_by_wa_id(conn, wa_id: str) -> User | None:
     """Resolve an inbound number. Inactive users resolve to None, so
     deactivation is immediate revocation."""
