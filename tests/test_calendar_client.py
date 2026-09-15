@@ -157,3 +157,15 @@ async def test_get_event_returns_none_for_a_missing_event(conn, connected):
         return httpx.Response(404, json={"error": {"message": "Not Found"}})
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         assert await cal.get_event(conn, connected, event_id="made-up", http=http) is None
+
+
+async def test_get_event_treats_a_cancelled_event_as_gone(conn, connected):
+    """Google soft-deletes: a deleted event vanishes from events.list but
+    events.get still returns it, status "cancelled", attendees intact. Live,
+    #6 came back that way after the user had deleted it, so a pending
+    approval for it read as live and could have been confirmed into a
+    deleted meeting. Deleted means gone."""
+    sent = []
+    async with _capture(sent, response={"id": "evt-1", "status": "cancelled",
+                                        "summary": "x"}) as http:
+        assert await cal.get_event(conn, connected, event_id="evt-1", http=http) is None

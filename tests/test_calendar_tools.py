@@ -305,3 +305,11 @@ async def test_list_events_on_schema_requires_a_date():
     from gaia.capabilities.calendar import CAPABILITY
     tool = next(t for t in CAPABILITY.tools if t.name == "list_events_on")
     assert tool.input_schema["required"] == ["date"]
+
+
+async def test_list_pending_invites_marks_a_deleted_event_as_gone(committed):
+    conn, user = committed
+    await pi.create(conn, user, event_id="evt-1", emails=["a@x.com"])
+    async with _http([], {"id": "evt-1", "status": "cancelled", "summary": "x"}) as http:
+        out = await tools.list_pending_invites(conn, user, {}, http=http)
+    assert out["pending"][0]["event"] is None

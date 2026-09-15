@@ -80,11 +80,18 @@ async def get_event(conn, user: User, *, event_id: str, http) -> dict | None:
     asking is what makes that a recoverable turn instead of a dead end.
     """
     try:
-        return await google.request(conn, user, "GET", f"{BASE}/{_path(event_id)}", http=http)
+        ev = await google.request(conn, user, "GET", f"{BASE}/{_path(event_id)}", http=http)
     except google.GoogleAPIError as e:
         if e.status == 404:
             return None
         raise
+    # Google soft-deletes. A deleted event drops out of events.list but
+    # events.get still returns it, status "cancelled", attendees and all --
+    # live, a deleted #6 came back looking exactly like a real one. To every
+    # caller here, deleted means gone.
+    if ev.get("status") == "cancelled":
+        return None
+    return ev
 
 
 async def list_events(conn, user: User, *, time_min: datetime, time_max: datetime, http) -> list[dict]:
