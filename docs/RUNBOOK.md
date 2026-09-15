@@ -80,12 +80,12 @@ Every value below lives only in `.env` on the droplet. **None are in git**
 | `WA_APP_SECRET` | `app` | Verifies the `X-Hub-Signature-256` on every inbound webhook. This is what stops anyone who finds the URL from injecting fake messages. | Forged inbound messages. Rotate in the Meta app dashboard. |
 | `WA_VERIFY_TOKEN` | `app` | A string you invent. Meta echoes it once when you first subscribe the webhook. | Low. Only useful during webhook setup. |
 | `WA_PHONE_NUMBER_ID` | `app`, `jobs` | Which WhatsApp business number to send from. Not a secret, but lives with them. | Not sensitive. |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | `app` | Internal OAuth application for Google Workspace. "Internal" is load-bearing: it exempts the app from [Google's verification review](https://developers.google.com/identity/protocols/oauth2/requirements) and the annual CASA security assessment. This exemption holds only while all users authenticate via the Workspace domain. One contractor on a personal Gmail forces an External app, which requires verification. | OAuth token and user impersonation. Rotate in Google Cloud console. |
-| `GOOGLE_TOKEN_KEY` | `app` | Fernet key encrypting Google refresh tokens at rest in the database. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. | **Rotating it orphans every stored token.** Every user must reconnect. The cost is developer onboarding friction, not a security incident — refresh tokens still decrypt to invalid streams, not to other users' tokens. |
-| `GOOGLE_DOMAIN` | `app` | The only Workspace domain (`example.com`) whose accounts may connect. Validated by the OAuth callback after Google's consent flow. Not a secret, but lives with the OAuth config. | Not sensitive in itself. Misconfiguration — set it wrong and you either lock everyone out or widen who may connect. Change it only deliberately in `.env`. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | `app`, `jobs` | Internal OAuth application for Google Workspace. `jobs` needs them as well as `app` — the digest refreshes an access token every morning, which is a call to Google's token endpoint with this pair. "Internal" is load-bearing: it exempts the app from [Google's verification review](https://developers.google.com/identity/protocols/oauth2/requirements) and the annual CASA security assessment. This exemption holds only while all users authenticate via the Workspace domain. One contractor on a personal Gmail forces an External app, which requires verification. | OAuth token and user impersonation. Rotate in Google Cloud console. |
+| `GOOGLE_TOKEN_KEY` | `app`, `jobs` | Fernet key encrypting Google refresh tokens at rest in the database, and the HMAC key signing consent links. `jobs` needs it too: the morning digest decrypts a refresh token for every connected developer. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. | **Rotating it orphans every stored token.** Every user must reconnect. The cost is developer onboarding friction, not a security incident — refresh tokens still decrypt to invalid streams, not to other users' tokens. |
+| `GOOGLE_DOMAIN` | `app` | The only Workspace domain (`example.com`) whose accounts may connect. `app` alone, because only the OAuth callback asks the question — and it asks it of the `hd` claim Google signs into the id_token, not of the address's suffix, which is a string anyone could end in the right thing. Not a secret, but lives with the OAuth config. | Not sensitive in itself. Misconfiguration — set it wrong and you either lock everyone out or widen who may connect. Change it only deliberately in `.env`. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `backup` | DigitalOcean Spaces key pair. The `aws` CLI reads these exact names natively. | **Every nightly database dump.** This is the highest-value pair here — a backup is the whole client book in one file. Rotate in the DO control panel. |
 | `SPACES_BUCKET` / `SPACES_ENDPOINT` | `backup` | Where dumps go. Currently `gaia-backups` at `nyc3`. | Not sensitive on their own. |
-| `DOMAIN` | `caddy` **only** | The hostname Caddy provisions TLS for. | Not sensitive — it is public DNS. |
+| `DOMAIN` | `caddy`, `app` | The hostname Caddy provisions TLS for — and, since the Workspace grant, what `settings.domain` builds the OAuth redirect URI and the consent link from. Change it and the redirect URI registered in Google Cloud has to change with it, or every connect fails at Google with `redirect_uri_mismatch`. | Not sensitive — it is public DNS. |
 
 Two more variables exist in `.env` and are not credentials in their own right,
 but the first embeds one and is a reliable source of confusion:
@@ -100,7 +100,7 @@ but the first embeds one and is a reliable source of confusion:
   per-process database. Local only; `conftest.py` defaults to exactly this, so
   you need it only if you differ.
 
-**`caddy` gets `DOMAIN` and nothing else.** It is deliberately not given
+**`caddy` gets `DOMAIN` and nothing else** — `app` receives it too, via `env_file`, but the sentence is about what Caddy is handed. It is deliberately not given
 `env_file: .env`: the public-facing TLS terminator has no use for the
 Anthropic key, the WhatsApp token or the database password, and handing them
 to it widens the blast radius of a Caddy compromise for no benefit.
@@ -275,6 +275,10 @@ Two migrations ship with this change: `006_google_workspace.sql` applies the
 schema (the `users.email` column, calendar event links, Google account storage),
 and `007_revoked_notified_at.sql` adds a timestamp for tracking whether a token
 revocation has been announced. Both apply themselves at startup.
+
+The Cloud project, the Internal consent screen and the OAuth client are a
+prerequisite and are not created by any of this — `deploy/README.md` → "Google"
+is the procedure, including the redirect URI that must match `DOMAIN` exactly.
 
 **The deploy order is not optional.**
 

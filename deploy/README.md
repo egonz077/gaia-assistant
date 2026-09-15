@@ -68,6 +68,64 @@ yet.
    under your control, and an agent added the day before go-live with no
    template in place gets no digest.
 
+## Google
+
+Needed only for the calendar feature, and, like Meta, better done before the
+deploy than during it. Everything here happens in the Google Cloud console,
+under the **Gaia Workspace organisation** — a project created under a personal
+account cannot be made Internal, and that single setting is what the whole
+arrangement rests on.
+
+1. **Create the project** inside the organisation. Check the org name at the
+   top of the console; a project sitting under "No organisation" is the one
+   mistake here that cannot be corrected later without starting over.
+2. **Enable the Google Calendar API** for it.
+3. **Configure the OAuth consent screen as `Internal`.** Internal is what
+   exempts the app from [Google's verification
+   review](https://developers.google.com/identity/protocols/oauth2/requirements)
+   — no unverified-app interstitial, no 100-user cap, and none of the annual
+   CASA security assessment that a restricted scope would otherwise drag in.
+   **It holds only while every user is on the Workspace domain.** One
+   contractor on a personal Gmail forces External, and External in Testing
+   expires refresh tokens seven days after consent, which means every
+   developer reconnecting weekly, forever.
+4. **Add the scopes.** Three, and no more:
+
+   ```
+   openid
+   email
+   https://www.googleapis.com/auth/calendar.events.owned
+   ```
+
+   `calendar.events.owned` is "see, create, change, and delete events on
+   Google calendars you own" — own-calendar-only, so no domain-wide
+   delegation and no key that can impersonate anyone in the organisation.
+   `openid` and `email` are non-sensitive and are how the callback learns
+   which account consented: they make the token response carry an `id_token`,
+   whose signed `hd` claim is what the domain check actually tests. Without
+   them the flow has no way to identify the consenting account at all.
+5. **Create an OAuth client** of type *Web application*. Register exactly one
+   authorized redirect URI:
+
+   ```
+   https://<DOMAIN>/oauth/callback
+   ```
+
+   Google matches this string exactly — scheme, host and path, no trailing
+   slash. It must equal `https://$DOMAIN/oauth/callback` with the same
+   `DOMAIN` that is in `.env`, because that is what `settings.domain` builds
+   the redirect from. A mismatch fails at Google's own screen with
+   `redirect_uri_mismatch`, before the callback is ever reached.
+6. **Put the client id and secret in `.env`** as `GOOGLE_CLIENT_ID` and
+   `GOOGLE_CLIENT_SECRET`, generate `GOOGLE_TOKEN_KEY`, and set
+   `GOOGLE_DOMAIN` to the Workspace domain. See `.env.example`.
+
+**After the deploy, before announcing the feature**, every existing developer
+needs an address on their user row — `docs/RUNBOOK.md` → "Deploy the Google
+Workspace integration" has the order and the reason. The callback refuses any
+account that does not match it, so announcing first produces a developer who
+cannot connect and does not know why.
+
 ## First run
 
 ```bash
