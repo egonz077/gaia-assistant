@@ -231,8 +231,19 @@ The 7-day expiry confirms the backlog's claim and is worth stating plainly: it
 applies to External apps in Testing unless the only scopes requested are a
 subset of name, email and profile. Ours are not.
 
+**Observed in the console, 2026-09-15:** Google classifies
+`calendar.events.owned` as **sensitive**, and `gmail.insert` as **restricted** —
+the console groups them under exactly those headings. That refines the paragraph
+below rather than contradicting it, and the refinement matters: *sensitive* is
+not *free*. An External app needs a verification review for a sensitive scope
+too; what it avoids, relative to a restricted one, is the annual CASA
+assessment.
+
+So if a contractor on a personal Gmail ever forces External, the calendar half
+needs a verification review as well. It is the cheaper half, not the exempt one.
+
 **The calendar capabilities survive External far better than the email one
-does.** Calendar's scopes are not restricted. If the contractor case ever
+does.** Calendar's scopes are sensitive rather than restricted. If the contractor case ever
 materialises, the cheap answer is likely to be that drafting email stays
 Internal-only — a per-user capability, which `Capability.allowed_user_ids`
 already expresses — rather than dragging the whole app through CASA.
