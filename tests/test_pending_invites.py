@@ -29,3 +29,18 @@ async def test_one_user_cannot_claim_anothers(conn, ana, sofia):
 
 async def test_unknown_id_is_none(conn, ana):
     assert await pi.claim(conn, ana, uuid4()) is None
+
+
+async def test_open_for_lists_only_live_own_rows(conn, ana, sofia):
+    """The model loses every id at the turn boundary -- history is prose --
+    so on "send it" it must be able to look the pending approval up rather
+    than guess an event id. Same pattern as list_commitments."""
+    live = await pi.create(conn, ana, event_id="evt-live", emails=["a@x.com"])
+    used = await pi.create(conn, ana, event_id="evt-used", emails=["b@x.com"])
+    await pi.claim(conn, ana, used)
+    await pi.create(conn, ana, event_id="evt-old", emails=["c@x.com"], ttl_minutes=-1)
+    await pi.create(conn, sofia, event_id="evt-sofia", emails=["d@x.com"])
+
+    rows = await pi.open_for(conn, ana)
+    assert [r["event_id"] for r in rows] == ["evt-live"]
+    assert rows[0]["id"] == live and rows[0]["emails"] == ["a@x.com"]

@@ -90,3 +90,22 @@ async def test_already_revoked_account_raises_revoked(conn, ana):
     async with _http(lambda r: httpx.Response(500, json={})) as http:
         with pytest.raises(google.RevokedGrant):
             await google.access_token(conn, ana, http=http)
+
+
+async def test_non_2xx_raises_a_typed_error_carrying_the_status(conn, ana):
+    """Callers need to tell 404 from everything else -- a calendar_event_id
+    pointing at a deleted event is a normal end state, not a failure -- and
+    parsing a status code out of an f-string is not an interface. Still a
+    RuntimeError, so nothing that catches the old type breaks."""
+    await ga.upsert(conn, ana, google_email="a@x.com", refresh_token="1//r", scopes="s")
+
+    def handler(request):
+        if "oauth2" in str(request.url):
+            return httpx.Response(200, json={"access_token": "ya29"})
+        return httpx.Response(404, json={"error": {"message": "Not Found"}})
+
+    async with _http(handler) as http:
+        with pytest.raises(google.GoogleAPIError) as exc:
+            await google.request(conn, ana, "GET", "https://www.googleapis.com/x", http=http)
+    assert exc.value.status == 404
+    assert isinstance(exc.value, RuntimeError)

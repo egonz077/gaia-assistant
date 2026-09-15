@@ -4,6 +4,7 @@ from gaia.capabilities.calendar.tools import (
     check_availability,
     confirm_invite,
     create_event,
+    list_pending_invites,
     propose_invite,
 )
 
@@ -23,6 +24,12 @@ CAPABILITY = Capability(
         "UTC offset yourself.\n"
         "\nIf a tool says needs_connection, send the user the link it gives you and explain "
         "that Gaia needs access to their Google Calendar once.\n"
+        "\nEvent ids and pending ids come only from your own tool results in the current "
+        "turn -- create_event, propose_invite, list_pending_invites. Never invent one, and "
+        "never rely on remembering one from an earlier turn: your history is prose and the "
+        "ids are gone. When the user approves an invitation you proposed in an earlier turn, "
+        "call list_pending_invites and confirm the matching pending_id. Never call "
+        "propose_invite twice for the same event.\n"
     ),
     tools=(
         Tool("check_availability",
@@ -61,6 +68,13 @@ CAPABILITY = Capability(
               "properties": {"pending_id": {"type": "string"}},
               "required": ["pending_id"]},
              confirm_invite),
+        Tool("list_pending_invites",
+             "The invitations you have proposed that are still waiting for the user's yes, "
+             "each with the event it is for. Call this when the user approves something "
+             "you proposed in an earlier turn -- the pending_id lives here, not in your "
+             "memory.",
+             {"type": "object", "properties": {}},
+             list_pending_invites),
         Tool("cancel_event",
              "Delete an event from the user's calendar, notifying anyone invited.",
              {"type": "object",

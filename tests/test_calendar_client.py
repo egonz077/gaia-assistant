@@ -137,3 +137,23 @@ async def test_event_ids_are_escaped_into_the_url_path(conn, connected):
         # The whole id stays inside one path segment. `..` is harmless there
         # -- it is the slash that would let it climb out.
         assert "/" not in path[len(prefix):]
+
+
+async def test_get_event_returns_the_event(conn, connected):
+    sent = []
+    async with _capture(sent, response={"id": "evt-1", "summary": "Site walk"}) as http:
+        ev = await cal.get_event(conn, connected, event_id="evt-1", http=http)
+    assert ev["summary"] == "Site walk"
+    assert sent[0]["method"] == "GET" and sent[0]["url"].endswith("/events/evt-1")
+
+
+async def test_get_event_returns_none_for_a_missing_event(conn, connected):
+    """The model invented an event id once, in production, and the failure
+    surfaced two calls later at confirm time with nothing the model could act
+    on. A missing event has to be answerable at the point of asking."""
+    def handler(request):
+        if "oauth2" in str(request.url):
+            return httpx.Response(200, json={"access_token": "ya29"})
+        return httpx.Response(404, json={"error": {"message": "Not Found"}})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        assert await cal.get_event(conn, connected, event_id="made-up", http=http) is None

@@ -130,12 +130,73 @@ async def create_event(conn, user: User, args: dict, *, http=None) -> dict:
             "note": "Nobody has been invited. Use propose_invite to ask first."}
 
 
+def _when(user: User, ev: dict) -> str:
+    """An event's start as the user would say it. All-day events carry `date`
+    rather than `dateTime`; those are shown as the date."""
+    start = ev.get("start", {})
+    if "dateTime" not in start:
+        return start.get("date", "?")
+    local = datetime.fromisoformat(start["dateTime"]).astimezone(ZoneInfo(user.timezone))
+    return local.strftime("%A %Y-%m-%d %H:%M")
+
+
+def _event_brief(user: User, ev: dict) -> dict:
+    return {"summary": ev.get("summary"), "starts": _when(user, ev)}
+
+
 async def propose_invite(conn, user: User, args: dict, *, http=None) -> dict:
-    """Reaches nobody. Records the exact list so confirm_invite can send it."""
+    """Reaches nobody. Records the exact list so confirm_invite can send it.
+
+    Checks the event exists first. Live, the model invented an event id --
+    history is prose, so it had lost the real one at the turn boundary -- the
+    row was written anyway, and the 404 surfaced at confirm time as a dead
+    end. Refusing here, with no row written, leaves it a way forward:
+    list_pending_invites, or create_event again.
+
+    Returns what the invite is *to*, so the read-back can name the meeting
+    and not only the addresses; approving *who* without seeing *what* was
+    the gap the whole-branch review flagged.
+    """
     emails = list(args["emails"])
+    try:
+        async with _client(http) as client:
+            ev = await cal.get_event(conn, user, event_id=args["event_id"], http=client)
+    except google.RevokedGrant:
+        return _needs_connection(conn, user)
+    if ev is None:
+        return {"proposed": False,
+                "note": "No such event on the calendar. Event ids come only from "
+                        "create_event or list_pending_invites -- never guess one."}
     pending_id = await pi_db.create(conn, user, event_id=args["event_id"], emails=emails)
     return {"pending_id": str(pending_id), "emails": emails,
-            "note": "Read these addresses back and wait for a yes before confirm_invite."}
+            "event": _event_brief(user, ev),
+            "note": "Read the addresses AND what they are being invited to back to "
+                    "the user, and wait for a yes before confirm_invite."}
+
+
+async def list_pending_invites(conn, user: User, args: dict, *, http=None) -> dict:
+    """The model's way back to an approval from a previous turn.
+
+    Each row is looked up on the calendar so the list can say what it is an
+    invite to -- and say plainly when the event no longer exists, so the
+    model tells the user instead of confirming into a 404.
+    """
+    rows = await pi_db.open_for(conn, user)
+    pending = []
+    try:
+        async with _client(http) as client:
+            for r in rows:
+                ev = await cal.get_event(conn, user, event_id=r["event_id"], http=client)
+                pending.append({
+                    "pending_id": str(r["id"]),
+                    "event_id": r["event_id"],
+                    "emails": list(r["emails"]),
+                    "event": _event_brief(user, ev) if ev else None,
+                    "expires_at": r["expires_at"].isoformat(),
+                })
+    except google.RevokedGrant:
+        return _needs_connection(conn, user)
+    return {"pending": pending}
 
 
 async def confirm_invite(conn, user: User, args: dict, *, http=None) -> dict:

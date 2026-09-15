@@ -71,6 +71,22 @@ async def add_attendees(conn, user: User, *, event_id: str, emails: list[str], h
     )
 
 
+async def get_event(conn, user: User, *, event_id: str, http) -> dict | None:
+    """None for a missing event, rather than an exception.
+
+    The model invented an event id once, live -- it had lost the real one at
+    the turn boundary -- and the 404 surfaced two calls later at confirm time
+    with nothing it could act on. Answering "does this exist" at the point of
+    asking is what makes that a recoverable turn instead of a dead end.
+    """
+    try:
+        return await google.request(conn, user, "GET", f"{BASE}/{_path(event_id)}", http=http)
+    except google.GoogleAPIError as e:
+        if e.status == 404:
+            return None
+        raise
+
+
 async def list_events(conn, user: User, *, time_min: datetime, time_max: datetime, http) -> list[dict]:
     params = urllib.parse.urlencode({
         "timeMin": time_min.isoformat(),

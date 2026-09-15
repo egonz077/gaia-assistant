@@ -24,6 +24,24 @@ async def create(conn, user: User, *, event_id: str, emails: list[str],
     return (await cur.fetchone())["id"]
 
 
+async def open_for(conn, user: User) -> list[dict]:
+    """Every approval this user proposed and has not yet confirmed or let
+    expire, oldest first. Ownership-scoped like claim, for the same reason.
+
+    Exists because history is prose: the pending_id that propose_invite
+    returned dies at the turn boundary, and on "send it" the model has to
+    look the approval up rather than guess an event id -- which it did, live,
+    before this existed.
+    """
+    cur = await conn.execute(
+        """SELECT id, event_id, emails, expires_at FROM pending_invites
+           WHERE user_id = %s AND confirmed_at IS NULL AND expires_at > now()
+           ORDER BY created_at""",
+        (user.id,),
+    )
+    return await cur.fetchall()
+
+
 async def claim(conn, user: User, pending_id: UUID) -> dict | None:
     """Ownership-scoped, single-use and expiring, in one statement.
 

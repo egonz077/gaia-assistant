@@ -20,6 +20,20 @@ class RevokedGrant(Exception):
     account. Callers turn this into an offer of a fresh link, never a retry."""
 
 
+class GoogleAPIError(RuntimeError):
+    """A non-2xx from a Google API, carrying the status a caller can branch on.
+
+    Still a RuntimeError, so everything that already catches the old type
+    keeps working. The point is `status`: a 404 on an event id is a normal
+    end state -- someone deleted it, or the model invented it -- and parsing
+    the code back out of an f-string is not an interface.
+    """
+
+    def __init__(self, method: str, url: str, status: int, body: str):
+        super().__init__(f"google {method} {url} -> {status} {body[:300]}")
+        self.status = status
+
+
 async def access_token(conn, user: User, *, http) -> str:
     account = await ga_db.get(conn, user)
     if account is None or account["revoked_at"] is not None:
@@ -62,5 +76,5 @@ async def request(conn, user: User, method: str, url: str, *, http, json=None) -
         method, url, headers={"Authorization": f"Bearer {token}"}, json=json
     )
     if resp.status_code >= 400:
-        raise RuntimeError(f"google {method} {url} -> {resp.status_code} {resp.text[:300]}")
+        raise GoogleAPIError(method, url, resp.status_code, resp.text)
     return resp.json() if resp.content else {}

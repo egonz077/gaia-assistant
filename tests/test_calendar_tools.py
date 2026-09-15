@@ -86,7 +86,13 @@ async def test_propose_invite_reaches_nobody(committed):
     async with _http(sent, {}) as http:
         out = await tools.propose_invite(
             conn, user, {"event_id": "evt-1", "emails": ["a@x.com"]}, http=http)
-    assert sent == []          # no Google call at all
+    # propose_invite now reads the event to check it exists, so "no Google
+    # call at all" is no longer the property -- and never was the point. What
+    # must not happen here is a WRITE: nothing that could put a name on a
+    # calendar or an email in an inbox. A GET of the user's own event reaches
+    # nobody. That distinction is the approval gate, so it is asserted exactly.
+    assert all(c["method"] == "GET" for c in sent), sent
+    assert not any("attendees" in c["body"] or "sendUpdates" in c["url"] for c in sent), sent
     assert out["pending_id"]
     assert out["emails"] == ["a@x.com"]
 
@@ -173,3 +179,70 @@ async def test_a_failed_correlation_write_still_returns_the_event_id(committed):
             "lead_id": "not-a-uuid-at-all",
         }, http=http)
     assert out["event_id"] == "evt-1"
+
+
+_EVENT = {"id": "evt-1", "summary": "Site walk",
+          "start": {"dateTime": "2026-09-16T10:00:00-04:00"},
+          "end": {"dateTime": "2026-09-16T11:00:00-04:00"}}
+
+
+def _http_404():
+    def handler(request):
+        if "oauth2" in str(request.url):
+            return httpx.Response(200, json={"access_token": "ya29"})
+        return httpx.Response(404, json={"error": {"message": "Not Found"}})
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+async def test_propose_invite_refuses_an_event_that_does_not_exist(committed):
+    """Live, the model invented evt_cal_integration_test_0916 and the failure
+    only surfaced at confirm time as a 404 it could do nothing with. Refusing
+    here, with no pending row written, is what turns a dead end into a
+    recoverable turn."""
+    conn, user = committed
+    async with _http_404() as http:
+        out = await tools.propose_invite(
+            conn, user, {"event_id": "made-up", "emails": ["a@x.com"]}, http=http)
+    assert out["proposed"] is False
+    assert "pending_id" not in out
+    cur = await conn.execute("SELECT count(*) AS n FROM pending_invites")
+    assert (await cur.fetchone())["n"] == 0
+
+
+async def test_propose_invite_says_what_the_invite_is_to(committed):
+    """The read-back used to name only the addresses, so the human approved
+    *who* without seeing *to what*."""
+    conn, user = committed
+    async with _http([], _EVENT) as http:
+        out = await tools.propose_invite(
+            conn, user, {"event_id": "evt-1", "emails": ["a@x.com"]}, http=http)
+    assert out["pending_id"]
+    assert out["event"]["summary"] == "Site walk"
+    assert "2026-09-16 10:00" in out["event"]["starts"]
+
+
+async def test_list_pending_invites_returns_open_approvals_with_their_event(committed):
+    conn, user = committed
+    pid = await pi.create(conn, user, event_id="evt-1", emails=["a@x.com"])
+    async with _http([], _EVENT) as http:
+        out = await tools.list_pending_invites(conn, user, {}, http=http)
+    assert [p["pending_id"] for p in out["pending"]] == [str(pid)]
+    assert out["pending"][0]["emails"] == ["a@x.com"]
+    assert out["pending"][0]["event"]["summary"] == "Site walk"
+
+
+async def test_list_pending_invites_marks_an_event_that_no_longer_exists(committed):
+    """A row whose event was deleted -- or never existed -- must still be
+    listed, and say so, so the model can tell the user instead of confirming
+    into a 404."""
+    conn, user = committed
+    await pi.create(conn, user, event_id="gone", emails=["a@x.com"])
+    async with _http_404() as http:
+        out = await tools.list_pending_invites(conn, user, {}, http=http)
+    assert out["pending"][0]["event"] is None
+
+
+async def test_list_pending_invites_schema_takes_nothing():
+    from gaia.capabilities.calendar import CAPABILITY
+    tool = next(t for t in CAPABILITY.tools if t.name == "list_pending_invites")
+    assert tool.input_schema.get("required", []) == []

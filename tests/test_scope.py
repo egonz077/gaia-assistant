@@ -81,6 +81,11 @@ OWNERSHIP_SCOPED = {
         "colleague may not confirm an invitation on someone else's behalf at "
         "any visibility setting, which is why the table has no visibility "
         "column.",
+    "gaia.core.db.pending_invites.open_for":
+        "the model's own way back to an approval it proposed a turn ago. "
+        "History is prose, so every id dies at the turn boundary; this is the "
+        "lookup that replaces guessing, and it answers whose approvals these "
+        "are -- ownership, for the same reason as claim.",
     "gaia.core.db.users.get_by_id":
         "resolving the OAuth callback's state to the user who started the "
         "flow. users carries no visibility column at all -- it is the table "
