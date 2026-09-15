@@ -768,6 +768,16 @@ def configured(monkeypatch):
 
 @pytest.fixture
 def client(monkeypatch, migrated):
+    """Patch the module global, not main.get_pool.
+
+    The routes reach the database through tx(), which resolves its pool by
+    calling get_pool() inside gaia.core.db.pool. Patching main.get_pool leaves
+    tx() pointed at the process-wide pool built from the placeholder
+    DATABASE_URL, and the tests then fail on a connection error that has
+    nothing to do with what they are testing.
+    """
+    from gaia.core.db import pool as pool_mod
+    monkeypatch.setattr(pool_mod, "_pool", migrated)
     monkeypatch.setattr(main, "get_pool", lambda: migrated)
     with TestClient(main.app) as c:
         yield c
@@ -1689,6 +1699,7 @@ own transport. The default constructs a client; it is not a test switch.
 """
 
 import logging
+from contextlib import asynccontextmanager
 from datetime import date as date_cls
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
@@ -1706,8 +1717,19 @@ log = logging.getLogger("gaia.calendar")
 CONNECT_HINT = "Ask the user to connect their Google account, then send them this link."
 
 
-def _client(http):
-    return http if http is not None else httpx.AsyncClient(timeout=20)
+@asynccontextmanager
+async def _client(http):
+    """Yield the caller's client untouched, or make and close our own.
+
+    `async with` on an httpx client that is already open raises "Cannot open a
+    client instance more than once", so a passed-in client must never be
+    re-entered -- and one we created must still be closed.
+    """
+    if http is not None:
+        yield http
+    else:
+        async with httpx.AsyncClient(timeout=20) as own:
+            yield own
 
 
 def _needs_connection(conn, user: User) -> dict:
