@@ -550,9 +550,16 @@ What remains, none of it blocking:
 https://www.googleapis.com/auth/gmail.insert            # write drafts, cannot send
 https://www.googleapis.com/auth/gmail.metadata          # headers only, for threading
 https://www.googleapis.com/auth/calendar.events.owned   # events incl. attendees + Meet
-https://www.googleapis.com/auth/calendar.freebusy       # conflicts, times only
 ```
 
-Three of the four are restricted, which is affordable only while the app stays
-Internal (§2) — and that constraint, not any of the API mechanics, is the thing
-most likely to change out from under this design.
+Three, not four. `calendar.freebusy` was in an earlier draft of this list and
+was dropped while designing: correlation needs event *detail*, which `freebusy`
+does not return, so the digest reads `events.list` — and `calendar.events.owned`
+already grants that ("**See**, create, change, and delete events on Google
+calendars you own"). Under own-calendar-only, `freebusy` buys no capability and
+only lengthens a consent screen that already explains itself poorly.
+
+Two of the three are restricted (`gmail.insert`, `gmail.metadata`), which is
+affordable only while the app stays Internal (§2) — and that constraint, not any
+of the API mechanics, is the thing most likely to change out from under this
+design.
