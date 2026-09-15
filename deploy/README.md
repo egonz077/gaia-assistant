@@ -116,6 +116,19 @@ arrangement rests on.
    `DOMAIN` that is in `.env`, because that is what `settings.domain` builds
    the redirect from. A mismatch fails at Google's own screen with
    `redirect_uri_mismatch`, before the callback is ever reached.
+
+   **Web application, not Desktop app.** The desktop type is what a loopback
+   probe uses and it is the one muscle memory reaches for. It offers no
+   redirect URI field at all — Google permits only loopback redirects for it —
+   so every consent fails with that same `redirect_uri_mismatch`, and the
+   client's own page gives no hint why, because there is nothing on it to
+   edit. On the phone it reads "Access blocked: This app's request is
+   invalid", with whatever account Google happened to have signed in shown
+   underneath, which sends you chasing the wrong account instead of the wrong
+   client. The first live deploy lost an hour to exactly this. If the client's
+   header reads "Client ID for Desktop", delete it and create a Web
+   application one; the id and secret change, so `.env` on the droplet does
+   too.
 6. **Put the client id and secret in `.env`** as `GOOGLE_CLIENT_ID` and
    `GOOGLE_CLIENT_SECRET`, generate `GOOGLE_TOKEN_KEY`, and set
    `GOOGLE_DOMAIN` to the Workspace domain. See `.env.example`.
