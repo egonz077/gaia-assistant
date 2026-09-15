@@ -318,6 +318,24 @@ Gmail account, outside the Workspace domain), `conferenceData` for Meet, and
 | Created, `sendUpdates` omitted | **The event and its Meet link, already on their calendar. No email.** |
 | Patched, `sendUpdates: "all"` | The invitation email arrives |
 
+**Qualifier, observed 2026-09-15 in production:** that appearance is
+conditional on the *recipient's* side. Consumer Gmail ships with Calendar's
+"unknown sender" protection on: an invitation from an organizer the account
+has never corresponded with is delivered, labelled "Invitation from an unknown
+sender", and **not added to the calendar** until the recipient clicks "I know
+the sender" or replies. The probe above appeared instantly because its organizer
+had emailed the attendee before; the same attendee invited by a different
+organizer from the same domain saw only the labelled email. The heuristic is
+per organizer-recipient pair, not per domain, and nothing on the organizer's
+side -- domain verification included -- changes it.
+
+For the design this cuts both ways. A client the developer has been emailing is
+a known sender, so the intrusion finding stands and the approval gate is still
+needed. A brand-new lead invited before any email has been exchanged is not,
+and sees a labelled email rather than a calendar entry -- which is a softer
+first contact than the finding implies, but only by the recipient's choice, and
+only until they click once.
+
 **`sendUpdates` suppresses the notification, not the intrusion.** A client
 watches a meeting with Gaia Group materialise on their calendar, with a Meet
 link, before anyone has approved anything — and the absence of an email makes it
