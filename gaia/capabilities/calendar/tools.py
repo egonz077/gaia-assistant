@@ -74,8 +74,15 @@ async def check_availability(conn, user: User, args: dict, *, http=None) -> dict
             )
     except google.RevokedGrant:
         return _needs_connection(conn, user)
+    # Converted before it is formatted. Google answers in the *calendar's*
+    # default zone, not the developer's, so strftime on the raw value reports
+    # whatever offset her calendar happens to be set to -- "busy 14:00-15:00"
+    # about a 10am meeting, for a UTC-default calendar read in New York. The
+    # comparisons in busy_intervals are unaffected (aware datetimes compare
+    # fine across offsets), which is exactly why only the display was wrong.
+    tz = ZoneInfo(user.timezone)
     return {"date": day, "busy": [
-        {"from": s.strftime("%H:%M"), "to": e.strftime("%H:%M")}
+        {"from": s.astimezone(tz).strftime("%H:%M"), "to": e.astimezone(tz).strftime("%H:%M")}
         for s, e in cal.busy_intervals(events)
     ]}
 
@@ -97,15 +104,27 @@ async def create_event(conn, user: User, args: dict, *, http=None) -> dict:
             )
     except google.RevokedGrant:
         return _needs_connection(conn, user)
+    event_id = ev.get("id")
     # Both directions, written together. extendedProperties (set in
     # client.create_event) lets events.list find Gaia's events server-side;
     # the column is the durable half, because the calendar is not a database
     # and people delete events.
-    if args.get("lead_id"):
-        await leads_db.set_calendar_event(conn, user, args["lead_id"], ev["id"])
-    if args.get("commitment_id"):
-        await commitments_db.set_calendar_event(conn, user, args["commitment_id"], ev["id"])
-    return {"event_id": ev.get("id"),
+    #
+    # Swallowed on purpose: the event is already on the calendar by the time
+    # this runs. A hallucinated lead_id -- the scar registry.dispatch's own
+    # docstring names -- made this raise, dispatch report "tool create_event
+    # failed", and the model do the reasonable thing and create the meeting
+    # again. requestId makes the Meet conference idempotent, not the event.
+    # A lost link is recoverable by asking her; a second identical meeting on
+    # a client's calendar is not.
+    try:
+        if args.get("lead_id"):
+            await leads_db.set_calendar_event(conn, user, args["lead_id"], event_id)
+        if args.get("commitment_id"):
+            await commitments_db.set_calendar_event(conn, user, args["commitment_id"], event_id)
+    except Exception:
+        log.exception("created event %s but could not link it for user %s", event_id, user.id)
+    return {"event_id": event_id,
             "meet_link": ev.get("hangoutLink"),
             "starts": start.strftime("%A %Y-%m-%d %H:%M"),
             "note": "Nobody has been invited. Use propose_invite to ask first."}

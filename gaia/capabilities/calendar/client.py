@@ -14,6 +14,22 @@ from gaia.core.models import User
 BASE = "https://www.googleapis.com/calendar/v3/calendars/primary/events"
 
 
+def _path(event_id: str) -> str:
+    """safe="" so slashes are escaped too.
+
+    The id arrives from the model, which read it off a photographed note or a
+    transcribed voice message as readily as off a tool result. httpx
+    normalises `..` segments, so an unescaped id does not stay in the path
+    segment it was written into: "../../calendars/someone/events/x" addressed
+    a different calendar entirely. calendar.events.owned bounds what that can
+    reach to calendars this developer already owns, so it was never a route to
+    a colleague's client -- but this module is where third-party text meets a
+    URL, and a boundary that holds only because of a scope is one failed
+    assumption from not holding.
+    """
+    return urllib.parse.quote(event_id, safe="")
+
+
 async def create_event(conn, user: User, *, summary: str, start: datetime,
                        end: datetime, with_meet: bool, http, extended: dict | None = None) -> dict:
     """Creates the event BARE -- no attendees, ever.
@@ -50,7 +66,7 @@ async def add_attendees(conn, user: User, *, event_id: str, emails: list[str], h
     from confirm_invite, downstream of a human who saw the address list."""
     params = urllib.parse.urlencode({"conferenceDataVersion": "1", "sendUpdates": "all"})
     return await google.request(
-        conn, user, "PATCH", f"{BASE}/{event_id}?{params}",
+        conn, user, "PATCH", f"{BASE}/{_path(event_id)}?{params}",
         http=http, json={"attendees": [{"email": e} for e in emails]},
     )
 
@@ -68,7 +84,7 @@ async def list_events(conn, user: User, *, time_min: datetime, time_max: datetim
 
 async def delete_event(conn, user: User, *, event_id: str, http) -> None:
     await google.request(
-        conn, user, "DELETE", f"{BASE}/{event_id}?sendUpdates=all", http=http
+        conn, user, "DELETE", f"{BASE}/{_path(event_id)}?sendUpdates=all", http=http
     )
 
 

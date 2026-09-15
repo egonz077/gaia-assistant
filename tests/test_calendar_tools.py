@@ -120,3 +120,56 @@ async def test_tools_offer_a_link_when_not_connected(migrated):
         async with _http([], {}) as http:
             out = await tools.check_availability(c, conn_user, {"date": "2026-09-16"}, http=http)
     assert out["needs_connection"] is True
+
+
+async def test_busy_times_are_shown_in_the_users_own_timezone(migrated):
+    """list_events sends no timeZone parameter, so Google answers in the
+    *calendar's* default zone -- which is not necessarily the developer's.
+    strftime on that value reports the offset Google happened to use: a 10am
+    meeting on a calendar defaulting to UTC is read back as "busy 14:00" to
+    someone in New York. The interval arithmetic is fine, because aware
+    datetimes compare correctly across offsets; only what she is told is
+    wrong, which is what makes it easy to miss.
+
+    Madrid here rather than the fixture's New York, so the event's -04:00 and
+    the user's zone cannot agree by construction.
+    """
+    async with migrated.connection() as c:
+        c.row_factory = dict_row
+        user = await users_db.create_user(c, name="Ana", wa_id="13055557003",
+                                          email="ana@gaiagroupdevelopment.com",
+                                          timezone="Europe/Madrid")
+        await ga.upsert(c, user, google_email="ana@gaiagroupdevelopment.com",
+                        refresh_token="1//r", scopes="s")
+        await c.commit()
+
+    events = {"items": [{"summary": "Seller call",
+                         "start": {"dateTime": "2026-09-16T10:00:00-04:00"},
+                         "end": {"dateTime": "2026-09-16T11:00:00-04:00"}}]}
+    async with migrated.connection() as c:
+        c.row_factory = dict_row
+        async with _http([], events) as http:
+            out = await tools.check_availability(c, user, {"date": "2026-09-16"}, http=http)
+
+    # 10:00-04:00 is 14:00 UTC, which is 16:00 in Madrid in September.
+    assert out["busy"] == [{"from": "16:00", "to": "17:00"}]
+
+
+async def test_a_failed_correlation_write_still_returns_the_event_id(committed):
+    """By the time the columns are written the event exists on the calendar.
+    A hallucinated lead_id -- registry.dispatch's own docstring names "a
+    hallucinated uuid" as a scar this codebase already carries -- made
+    set_calendar_event raise, dispatch report "tool create_event failed", and
+    the model do the reasonable thing: create the event again. requestId makes
+    the Meet *conference* idempotent, not the event.
+
+    A missing link between a lead and its event is recoverable by asking. A
+    second identical meeting on a client's calendar is not.
+    """
+    conn, user = committed
+    async with _http([], {"id": "evt-1"}) as http:
+        out = await tools.create_event(conn, user, {
+            "summary": "Site walk", "date": "2026-09-16", "start_time": "10:00",
+            "lead_id": "not-a-uuid-at-all",
+        }, http=http)
+    assert out["event_id"] == "evt-1"

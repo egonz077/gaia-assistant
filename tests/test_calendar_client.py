@@ -1,4 +1,5 @@
 from datetime import datetime
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from cryptography.fernet import Fernet
@@ -112,3 +113,27 @@ def test_busy_intervals_skips_all_day_events():
     day on someone's birthday would make every day look full."""
     assert cal.busy_intervals([{"start": {"date": "2026-09-16"},
                                 "end": {"date": "2026-09-17"}}]) == []
+
+
+async def test_event_ids_are_escaped_into_the_url_path(conn, connected):
+    """The event id reaches here from the model, which got it from a
+    photographed note or a transcribed voice message as easily as from a tool
+    result. httpx normalises `..` segments, so an unescaped id is path
+    traversal against the Calendar API. calendar.events.owned caps what that
+    could reach at calendars this developer already owns -- but this file is
+    the feature's boundary with a third party's text, and a boundary that
+    holds by accident is not one."""
+    sent = []
+    async with _capture(sent) as http:
+        await cal.add_attendees(conn, connected, event_id="../../calendars/victim/events/e1",
+                                emails=["x@y.com"], http=http)
+        await cal.delete_event(conn, connected, event_id="../../calendars/victim/events/e1",
+                               http=http)
+
+    prefix = "/calendar/v3/calendars/primary/events/"
+    for call in sent:
+        path = urlsplit(call["url"]).path
+        assert path.startswith(prefix)
+        # The whole id stays inside one path segment. `..` is harmless there
+        # -- it is the slash that would let it climb out.
+        assert "/" not in path[len(prefix):]
