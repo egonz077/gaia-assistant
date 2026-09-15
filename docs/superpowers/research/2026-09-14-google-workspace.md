@@ -513,6 +513,7 @@ the Gaia Workspace domain rather than from documentation:
 | Settled | Where | How |
 |---|---|---|
 | The send ban can be structural | §1 | `gmail.insert` alone: draft composes, `drafts.create` and `messages.send` both 403 |
+| ~~The scope set is complete~~ | — | **Never probed, and false.** `userinfo` needs an identity scope; see the correction in §9. Nothing in this table was checked against the *absence* of a capability. |
 | Reply-all is possible without re-arming send or reading bodies | §1 | `+ gmail.metadata`: threaded reply-all built from headers, both send endpoints still 403 |
 | Internal exempts a restricted scope from verification and CASA | §2 | Consent completed, no interstitial, verification never entered |
 | `calendar.events.owned` permits attendees | §3 | External attendee accepted on the narrow scope |
@@ -547,10 +548,52 @@ What remains, none of it blocking:
 **Recommended scope set, on the evidence above:**
 
 ```
+openid                                                  # identity -- see the correction below
+email                                                   # the consenting address, from the id_token
 https://www.googleapis.com/auth/gmail.insert            # write drafts, cannot send
 https://www.googleapis.com/auth/gmail.metadata          # headers only, for threading
 https://www.googleapis.com/auth/calendar.events.owned   # events incl. attendees + Meet
 ```
+
+### Correction, 2026-09-15: this list was wrong, and the omission was load-bearing
+
+The first four rows above were the whole list when this document was written,
+and a design built on it **could not complete a single consent**.
+
+Section 1 requires the callback to compare the consenting Google account against
+`users.email`. It never asked where that address comes from. The obvious answer —
+`https://www.googleapis.com/oauth2/v2/userinfo` — is served only to tokens
+holding `openid`, `email`/`userinfo.email` or `profile`. A token scoped to
+`calendar.events.owned` alone receives **403, insufficient authentication
+scopes**. The address then reads as the empty string, the domain check refuses
+it, and every developer who tries to connect is told "that account cannot be
+connected" — a message that sends whoever is debugging it to audit
+`users.email` and `GOOGLE_DOMAIN`, neither of which is the problem.
+
+**Why this survived thirteen implementation tasks and thirteen reviews:** the
+token exchange is mocked in every route test. A mock returns whatever shape the
+test author expected, so **no mock can falsify a scope requirement**. Every
+other finding in this document was measured against a live API; this one was
+assumed, and the assumption was never probed. The "what this research does not
+settle" list did not include it, which is the more useful lesson — the danger
+was not an open question left open, it was a question nobody thought to ask.
+
+**The repair is better than the omission.** Requesting `openid email` makes the
+token endpoint return an `id_token` carrying `email` and `hd`, so the second
+HTTP call disappears — and `hd` is the authoritative one. Google's words:
+
+> Unlike the request parameter, the ID token `hd` claim is contained within a
+> security token from Google, so the value can be trusted.
+
+So the domain check becomes an assertion signed by Google rather than
+`address.endswith("@" + domain)` string matching. `openid` and `email` are
+**non-sensitive** — unlike the Gmail scopes in section 2 — so nothing here
+disturbs the Internal exemption reasoning.
+
+A token taken straight from Google's token endpoint over HTTPS, in response to
+our own client-authenticated request, does not require signature validation;
+Google documents that exemption, and it is exactly this code path. It would not
+hold for an `id_token` arriving by any other route.
 
 Three, not four. `calendar.freebusy` was in an earlier draft of this list and
 was dropped while designing: correlation needs event *detail*, which `freebusy`

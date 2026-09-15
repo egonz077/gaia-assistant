@@ -32,7 +32,7 @@ the risk that research §1 names.
 |---|---|
 | **No mirror of Google state into Postgres** | Conflict logic runs in Python over live API responses. A `calendar_events` table would carry colleagues' meeting titles into a table that must then declare a `visibility` and inherit it from something — a subsystem, not a table, and exactly the trap this project's second rule warns about. Quota is three orders of magnitude away (research §7), so there is nothing to economise on. |
 | **Own calendar only** | Removes domain-wide delegation entirely. For a system holding a client book, not possessing a key that impersonates any user in the organisation is worth more than the feature it would buy. |
-| **Scopes: `calendar.events.owned` alone** | Confirmed to permit attendees and a Meet link (research §3). It also grants reads — "**See**, create, change, and delete events on Google calendars you own" — which is what correlation needs. `calendar.freebusy` was considered and rejected: held *alongside* `events.owned` it restricts nothing, because the same token already has full read on the calendar. It is a tidier endpoint, not a boundary, and not worth another line on a consent screen Google already describes badly. |
+| **Scopes: `openid`, `email`, `calendar.events.owned`** | Confirmed to permit attendees and a Meet link (research §3). It also grants reads — "**See**, create, change, and delete events on Google calendars you own" — which is what correlation needs. `calendar.freebusy` was considered and rejected: held *alongside* `events.owned` it restricts nothing, because the same token already has full read on the calendar. It is a tidier endpoint, not a boundary, and not worth another line on a consent screen Google already describes badly. |
 | **Conflicts = overlaps + no room for what's due** | Chosen over calendar-only overlaps. The second half is what makes the digest worth reading. |
 | **Addresses: ask once, then remember** | Explicit and predictable. Harvesting them from `gmail.metadata` envelopes was available and rejected — building a client book out of mail metadata is not something to do quietly. |
 
@@ -66,6 +66,22 @@ So `/oauth/start` validates and redirects, consuming nothing. A preview fetcher
 receives a 302 to Google and achieves nothing, because consent needs a human.
 The token dies by TTL, or when a callback succeeds.
 
+### Where the consenting address comes from
+
+**Corrected 2026-09-15, after the first whole-branch review.** This section
+originally required the equality check below without saying where the address
+came from, and the scope list held no identity scope — so the callback could
+not learn the address at all and refused every connect. Research §9 carries the
+full post-mortem.
+
+The flow requests `openid email` alongside the calendar scope. The token
+endpoint then returns an `id_token` carrying `email` and `hd`, so no second HTTP
+call is needed, and **the domain check uses the `hd` claim rather than a string
+suffix on the address** — Google states that claim can be trusted because it
+arrives inside a security token from Google, which a suffix match on an
+address never was. Both scopes are non-sensitive and do not affect the Internal
+exemption in §2.
+
 ### Who is allowed to finish the flow
 
 The link is a bearer credential for ten minutes, so the callback refuses
@@ -73,8 +89,9 @@ everything that is not exactly right:
 
 - **`users.email` must already be set** — by the admin CLI, at user creation.
   The consenting Google account must equal it.
-- **The domain must be `gaiagroupdevelopment.com`**, which is also precisely
-  what keeps the Internal exemption true (research §2).
+- **The `hd` claim must equal `gaiagroupdevelopment.com`** — Google's signed
+  assertion of the account's Workspace domain, which is also precisely what
+  keeps the Internal exemption true (research §2).
 
 The precondition matters more than it looks. If the callback *populated*
 `users.email` on first connect, then whoever used the link first would define
