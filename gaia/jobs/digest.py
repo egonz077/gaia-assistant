@@ -176,7 +176,25 @@ async def calendar_section(conn, user: User, *, http, today: str) -> dict | None
     The calendar must never break the digest. This product's daily heartbeat
     going silent because Google had a bad morning would be a worse bug than the
     one this feature fixes, so every failure here degrades to None.
+
+    The guard wraps the whole computation, not just the Google call, and that
+    is the point of splitting it in two. It used to end where the HTTP request
+    did, leaving the interval arithmetic and two database reads outside it --
+    so a dateTime that would not parse propagated out of send_digest and cost
+    that developer her leads and commitments as well as her calendar. The
+    failure the docstring promises to absorb was landing one layer below the
+    try that promised it.
     """
+    try:
+        return await _today_shape(conn, user, http=http, today=today)
+    except Exception:
+        log.exception("calendar section failed for %s", user.id)
+        return None
+
+
+async def _today_shape(conn, user: User, *, http, today: str) -> dict | None:
+    """The computation. Every line of it is inside calendar_section's guard,
+    which is only true while it lives in here."""
     from gaia.capabilities.calendar import client as cal
     from gaia.core import google
     from gaia.core.db import commitments as commitments_db
@@ -213,9 +231,6 @@ async def calendar_section(conn, user: User, *, http, today: str) -> dict | None
         if account["revoked_notified_at"] is not None:
             return None
         return {"revoked": True}
-    except Exception:
-        log.exception("calendar section failed for %s", user.id)
-        return None
 
     intervals = cal.busy_intervals(events)
     ids = [e["id"] for e in events if e.get("id")]
@@ -225,8 +240,13 @@ async def calendar_section(conn, user: User, *, http, today: str) -> dict | None
     about = (list((await leads_db.by_event_ids(conn, user, ids)).values())
              + list((await commitments_db.by_event_ids(conn, user, ids)).values()))
     return {
+        # .astimezone before .strftime: Google returns dateTime in the
+        # calendar's default zone, which need not be this developer's, and
+        # "you are double-booked at 14:00" about a 10am meeting is a sentence
+        # she cannot act on. The overlap arithmetic itself is offset-safe.
         "overlaps": [
-            {"a": a[0].strftime("%H:%M"), "b": b[0].strftime("%H:%M")}
+            {"a": a[0].astimezone(tz).strftime("%H:%M"),
+             "b": b[0].astimezone(tz).strftime("%H:%M")}
             for a, b in conflicts.overlaps(intervals)
         ],
         # Free minutes and a count, never a duration estimate. Gaia does not

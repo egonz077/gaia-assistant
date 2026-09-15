@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 from cryptography.fernet import Fernet
 import httpx
 import pytest
@@ -32,6 +34,17 @@ def _event(event_id, start, end, day="2026-09-16"):
         "start": {"dateTime": f"{day}T{start}:00-04:00"},
         "end": {"dateTime": f"{day}T{end}:00-04:00"},
     }
+
+
+def _failing_http():
+    """Google having a bad morning. Distinct from _revoking_http's 400
+    invalid_grant, which is the revocation feature working exactly as designed
+    -- an outage is the case where nothing is wrong with the grant at all."""
+    def handler(request):
+        if "oauth2" in str(request.url):
+            return httpx.Response(200, json={"access_token": "ya29"})
+        return httpx.Response(500, text="Internal Error")
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
 
 def _events_http(events):
@@ -157,3 +170,73 @@ async def test_a_rejected_delivery_does_not_stamp_revoked_notified_at(conn, ana,
 
     assert sent is False
     assert (await ga.get(conn, ana))["revoked_notified_at"] is None
+
+
+async def test_the_digest_survives_a_google_outage(conn, ana, migrated):
+    """Spec 6's "digest survives a Google failure". The digest is this
+    product's daily heartbeat: a calendar outage silencing it would be a worse
+    bug than the one the calendar section fixes. The section drops; the leads
+    and commitments she owes people go out regardless."""
+    await users_db.touch_inbound(conn, ana)
+    await ga.upsert(conn, ana, google_email="a@x.com", refresh_token="1//r", scopes="s")
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+    await leads_db.create(conn, ana, contact_name="Maria Delgado", description="Buying",
+                          next_action_at=past, next_action_note="Send Friday listings")
+
+    async with _failing_http() as http:
+        assert await digest.calendar_section(conn, ana, http=http, today="2026-09-16") is None
+
+    wa = FakeWhatsApp()
+    client = FakeAnthropic([FakeResponse([TextBlock("Morning! Maria Delgado is due.")])])
+    async with _failing_http() as http:
+        sent = await digest.send_digest(conn, client, wa, ana, pool=migrated, http=http)
+
+    assert sent is True
+    assert "Maria" in wa.sent[0][1]
+    payload = str(client.requests[0]["messages"])
+    assert "Maria Delgado" in payload
+    assert "calendar" not in payload  # omitted, never sent as null
+
+
+async def test_a_malformed_event_does_not_cost_her_the_whole_digest(conn, ana, migrated):
+    """The guarantee belongs to the function, not to the Google call inside
+    it. busy_intervals, the overlap arithmetic and two database reads all sat
+    outside the try, one layer below where the docstring promised every
+    failure degrades to None -- so a dateTime that will not parse took her
+    leads and commitments down with the calendar section."""
+    await users_db.touch_inbound(conn, ana)
+    await ga.upsert(conn, ana, google_email="a@x.com", refresh_token="1//r", scopes="s")
+    past = datetime.now(timezone.utc) - timedelta(days=1)
+    await leads_db.create(conn, ana, contact_name="Maria Delgado", description="Buying",
+                          next_action_at=past, next_action_note="Send Friday listings")
+
+    events = [{"id": "e1", "start": {"dateTime": "not-a-timestamp"},
+               "end": {"dateTime": "also-not-a-timestamp"}}]
+
+    async with _events_http(events) as http:
+        assert await digest.calendar_section(conn, ana, http=http, today="2026-09-16") is None
+
+    wa = FakeWhatsApp()
+    client = FakeAnthropic([FakeResponse([TextBlock("Morning! Maria Delgado is due.")])])
+    async with _events_http(events) as http:
+        sent = await digest.send_digest(conn, client, wa, ana, pool=migrated, http=http)
+
+    assert sent is True
+    assert "Maria" in wa.sent[0][1]
+
+
+async def test_overlaps_are_shown_in_the_users_own_timezone(conn, migrated):
+    """The digest's half of the same bug. Google returns dateTime in the
+    calendar's default zone, and "you are double-booked at 14:00" about a 10am
+    meeting is a sentence the developer cannot act on. Madrid, so the user's
+    zone and the fixture's -04:00 cannot agree by construction."""
+    user = await users_db.create_user(conn, name="Rui", wa_id="13055550099",
+                                      timezone="Europe/Madrid")
+    await ga.upsert(conn, user, google_email="r@x.com", refresh_token="1//r", scopes="s")
+    events = [_event("e1", "10:00", "11:00"), _event("e2", "10:30", "11:30")]
+
+    async with _events_http(events) as http:
+        out = await digest.calendar_section(conn, user, http=http, today="2026-09-16")
+
+    # 10:00-04:00 is 14:00 UTC, which is 16:00 in Madrid in September.
+    assert out["overlaps"] == [{"a": "16:00", "b": "16:30"}]
