@@ -1,0 +1,71 @@
+from gaia.capabilities.base import Capability, Tool
+from gaia.capabilities.calendar.tools import (
+    cancel_event,
+    check_availability,
+    confirm_invite,
+    create_event,
+    propose_invite,
+)
+
+CAPABILITY = Capability(
+    name="calendar",
+    prompt_fragment=(
+        "\nYou can check the user's calendar and put things on it. Creating an event invites "
+        "nobody — it lands only on their own calendar. To invite people you must call "
+        "propose_invite, read the exact addresses back to the user, wait for them to agree, "
+        "and only then call confirm_invite.\n"
+        "\nNever call confirm_invite without having shown the addresses and heard a yes. An "
+        "event you created can be deleted; an invitation that reached a client cannot be "
+        "unsent. When you read addresses back, name the people — 'Dalila Serrao and two "
+        "others at Arquitectonica' — because seven raw addresses are not checkable at a "
+        "glance.\n"
+        "\nGive dates as a date and a wall-clock time in the user's own day. Never compute a "
+        "UTC offset yourself.\n"
+        "\nIf a tool says needs_connection, send the user the link it gives you and explain "
+        "that Gaia needs access to their Google Calendar once.\n"
+    ),
+    tools=(
+        Tool("check_availability",
+             "What the user is already booked for on a given day. Times only, no details.",
+             {"type": "object",
+              "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}},
+              "required": ["date"]},
+             check_availability),
+        Tool("create_event",
+             "Put an event on the user's own calendar, optionally with a Google Meet link. "
+             "Invites nobody — use propose_invite afterwards to add people.",
+             {"type": "object",
+              "properties": {
+                  "summary": {"type": "string"},
+                  "date": {"type": "string", "description": "YYYY-MM-DD"},
+                  "start_time": {"type": "string", "description": "HH:MM, the user's local time"},
+                  "duration_minutes": {"type": "integer"},
+                  "with_meet": {"type": "boolean"},
+                  "lead_id": {"type": "string", "description": "Link this event to a lead."},
+                  "commitment_id": {"type": "string"},
+              },
+              "required": ["summary", "date", "start_time"]},
+             create_event),
+        Tool("propose_invite",
+             "Prepare an invitation for an existing event. Sends nothing. Returns the exact "
+             "address list to read back to the user before confirming.",
+             {"type": "object",
+              "properties": {"event_id": {"type": "string"},
+                             "emails": {"type": "array", "items": {"type": "string"}}},
+              "required": ["event_id", "emails"]},
+             propose_invite),
+        Tool("confirm_invite",
+             "Send the invitation the user just approved. Takes only the pending_id from "
+             "propose_invite — the addresses are the ones already shown to the user.",
+             {"type": "object",
+              "properties": {"pending_id": {"type": "string"}},
+              "required": ["pending_id"]},
+             confirm_invite),
+        Tool("cancel_event",
+             "Delete an event from the user's calendar, notifying anyone invited.",
+             {"type": "object",
+              "properties": {"event_id": {"type": "string"}},
+              "required": ["event_id"]},
+             cancel_event),
+    ),
+)
