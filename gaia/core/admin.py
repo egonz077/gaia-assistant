@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--phone", required=True, help="country code, no '+'")
     add.add_argument("--role", default="developer", choices=["developer", "admin"])
     add.add_argument("--tz", default="America/New_York", type=_timezone)
+    add.add_argument("--email", help="Workspace address; required before connecting a calendar")
+
+    set_email = sub.add_parser("set-email", help="Set or correct a user's Workspace address")
+    set_email.add_argument("--phone", required=True, help="country code, no '+'")
+    set_email.add_argument("--email", required=True)
 
     sub.add_parser("list-users")
 
@@ -146,14 +151,27 @@ async def _run(args, pool=None) -> None:
     """
     owns_pool = pool is None
     p = pool or get_pool()
-    await p.open(wait=True)
+    if owns_pool:
+        # An injected pool is already open (the caller's job, per the
+        # docstring above). Re-opening it here is not a harmless no-op: if a
+        # connection is checked out elsewhere at this instant (a fixture
+        # holding one, e.g.), psycopg_pool's wait() sees 0 idle < min_size
+        # and blocks on an event that a no-op re-open never schedules
+        # anything to set — a real deadlock, not a timing fluke.
+        await p.open(wait=True)
     try:
         async with tx(p) as conn:
             if args.command == "add-user":
                 user = await users_db.create_user(
-                    conn, name=args.name, wa_id=args.phone, role=args.role, timezone=args.tz
+                    conn, name=args.name, wa_id=args.phone, role=args.role,
+                    timezone=args.tz, email=args.email,
                 )
                 print(f"added {user.name} ({user.wa_id}) as {user.role}")
+            elif args.command == "set-email":
+                if await users_db.set_email(conn, wa_id=args.phone, email=args.email):
+                    print(f"{args.phone} -> {args.email}")
+                else:
+                    print(f"no user with phone {args.phone}")
             elif args.command == "list-users":
                 for u in await users_db.list_users(conn):
                     state = "active" if u.active else "inactive"

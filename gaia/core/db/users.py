@@ -21,13 +21,31 @@ async def create_user(
     wa_id: str,
     role: str = "developer",
     timezone: str = "America/New_York",
+    email: str | None = None,
 ) -> User:
     cur = await conn.execute(
-        f"""INSERT INTO users (name, wa_id, role, timezone)
-            VALUES (%s, %s, %s, %s) RETURNING {_COLUMNS}""",
-        (name, wa_id, role, timezone),
+        f"""INSERT INTO users (name, wa_id, role, timezone, email)
+            VALUES (%s, %s, %s, %s, %s) RETURNING {_COLUMNS}""",
+        (name, wa_id, role, timezone, email),
     )
     return _row_to_user(await cur.fetchone())
+
+
+async def get_email(conn, user: User) -> str | None:
+    """The address the OAuth callback must match. Ownership-scoped: this is
+    one person's own identity, not org-visible content."""
+    cur = await conn.execute("SELECT email FROM users WHERE id = %s", (user.id,))
+    row = await cur.fetchone()
+    return row["email"] if row else None
+
+
+async def set_email(conn, *, wa_id: str, email: str) -> bool:
+    """Admin-only backfill. Keyed by wa_id rather than by User because the
+    caller is the CLI, which knows a phone number and nothing else."""
+    cur = await conn.execute(
+        "UPDATE users SET email = %s WHERE wa_id = %s RETURNING id", (email, wa_id)
+    )
+    return await cur.fetchone() is not None
 
 
 async def get_by_wa_id(conn, wa_id: str) -> User | None:
