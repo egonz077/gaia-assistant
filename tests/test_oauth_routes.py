@@ -1,3 +1,5 @@
+import time
+
 from cryptography.fernet import Fernet
 import pytest
 from fastapi.testclient import TestClient
@@ -117,3 +119,116 @@ def _fake_exchange(email: str):
         return {"refresh_token": "1//refresh", "email": email,
                 "scopes": "https://www.googleapis.com/auth/calendar.events.owned"}
     return _exchange
+
+
+# ---------------------------------------------------------------------------
+# Finding 1: a declined consent must not crash the callback with a 500.
+# ---------------------------------------------------------------------------
+
+def test_callback_declined_consent_returns_a_clean_message(client, ana):
+    """Google redirects here with error=access_denied and no code when the
+    developer clicks Cancel. Declining is the second most likely outcome of
+    asking someone for access -- it must read as a refusal, not a crash."""
+    loc = client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}",
+                     follow_redirects=False).headers["location"]
+    state = loc.split("state=")[1].split("&")[0]
+    r = client.get(f"/oauth/callback?state={state}&error=access_denied")
+    assert r.status_code == 200
+    assert "declined" in r.text.lower()
+
+
+async def test_exchange_code_raises_cleanly_without_access_token(monkeypatch):
+    """A token response with no access_token -- a revoked client, a bad code
+    -- used to reach tok['access_token'] and blow up with a raw KeyError.
+    _exchange_code must turn that into something the route can catch."""
+    import httpx
+
+    class _FakeResponse:
+        def __init__(self, data):
+            self._data = data
+
+        def json(self):
+            return self._data
+
+    class _FakeAsyncClient:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, data=None):
+            # What Google actually sends back for a bad/expired code: no
+            # access_token, just an error string.
+            return _FakeResponse({"error": "invalid_grant"})
+
+        async def get(self, url, headers=None):
+            raise AssertionError("must not fetch userinfo without an access_token")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    with pytest.raises(main.OAuthExchangeError):
+        await main._exchange_code("bad-code")
+
+
+async def test_callback_handles_exchange_failure_without_crashing(client, migrated, monkeypatch):
+    """The route-level half of the same bug: _exchange_code raising must
+    surface as a clean text response, not an unhandled 500."""
+    async with migrated.connection() as c:
+        from psycopg.rows import dict_row
+        c.row_factory = dict_row
+        user = await users_db.create_user(
+            c, name="Ana", wa_id="13055558804", email="ana@gaiagroupdevelopment.com")
+        await c.commit()
+
+    async def _broken_exchange(code: str) -> dict:
+        raise main.OAuthExchangeError("invalid_grant")
+
+    monkeypatch.setattr(main, "_exchange_code", _broken_exchange)
+    loc = client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+                     follow_redirects=False).headers["location"]
+    state = loc.split("state=")[1].split("&")[0]
+    r = client.get(f"/oauth/callback?code=x&state={state}")
+    assert r.status_code == 200
+    assert "declined" not in r.text.lower()  # distinct from the Cancel path
+
+
+# ---------------------------------------------------------------------------
+# Finding 2: _PENDING_STATES must not grow without bound.
+# ---------------------------------------------------------------------------
+
+def test_start_evicts_expired_states(client, ana):
+    """Every /oauth/start inserts an entry; only a completed callback removes
+    one. An abandoned consent -- closed tab, declined offer -- must not sit in
+    this long-lived process's memory forever."""
+    stale_state = "a-state-nobody-ever-finished"
+    main._PENDING_STATES[stale_state] = (str(ana.id), time.monotonic() - main._STATE_TTL_SECONDS - 1)
+
+    client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}", follow_redirects=False)
+
+    assert stale_state not in main._PENDING_STATES
+
+
+def test_callback_refuses_an_expired_state(client, ana):
+    """The consent link itself is only good for ten minutes; a pending state
+    older than that is already dead and must be refused, not honoured."""
+    loc = client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}",
+                     follow_redirects=False).headers["location"]
+    state = loc.split("state=")[1].split("&")[0]
+    user_id, _ = main._PENDING_STATES[state]
+    main._PENDING_STATES[state] = (user_id, time.monotonic() - main._STATE_TTL_SECONDS - 1)
+
+    assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Finding 3: the config.py comment says these routes refuse rather than
+# half-work when the OAuth client isn't configured. Make that true.
+# ---------------------------------------------------------------------------
+
+def test_start_refuses_when_google_is_not_configured(client, ana, monkeypatch):
+    monkeypatch.setattr(main.settings, "google_client_id", "")
+    r = client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}", follow_redirects=False)
+    assert r.status_code == 503

@@ -1,4 +1,5 @@
 import logging
+import time
 import urllib.parse
 from contextlib import asynccontextmanager
 
@@ -86,10 +87,33 @@ async def inbound(request: Request) -> dict:
 
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned"
 
-# state -> user_id, for the few seconds a consent takes. In-process because a
-# restart mid-consent is a retry, not a data-loss event: the developer taps the
-# link again. A table would outlive the thing it describes.
-_PENDING_STATES: dict[str, str] = {}
+# Matches oauth_link.mint's own default TTL. A pending state can't legitimately
+# outlive the consent link that created it, so evicting anything older costs a
+# live consent nothing -- and refusing anything older closes the gap between
+# "will be evicted eventually" and "is actually still honoured".
+_STATE_TTL_SECONDS = 600
+
+# state -> (user_id, inserted_at). In-process because a restart mid-consent is
+# a retry, not a data-loss event: the developer taps the link again. A table
+# would outlive the thing it describes. Evicted lazily on each insert (see
+# oauth_start) so an abandoned consent -- closed tab, declined offer -- does
+# not sit in this long-lived process's memory forever.
+_PENDING_STATES: dict[str, tuple[str, float]] = {}
+
+
+def _evict_expired_states() -> None:
+    now = time.monotonic()
+    for s, (_, created) in list(_PENDING_STATES.items()):
+        if now - created > _STATE_TTL_SECONDS:
+            del _PENDING_STATES[s]
+
+
+class OAuthExchangeError(Exception):
+    """Google's token endpoint answered without an access_token -- a revoked
+    client, a reused or expired code, Google erroring. Without this, the
+    lookup below (tok['access_token']) raises a bare KeyError that FastAPI
+    turns into an unhandled 500; this lets the callback show a clean refusal
+    instead."""
 
 
 async def _exchange_code(code: str) -> dict:
@@ -109,6 +133,8 @@ async def _exchange_code(code: str) -> dict:
             "redirect_uri": redirect,
             "grant_type": "authorization_code",
         })).json()
+        if "access_token" not in tok:
+            raise OAuthExchangeError(tok.get("error", "no access_token in token response"))
         who = (await http.get(
             "https://www.googleapis.com/oauth2/v2/userinfo",
             headers={"Authorization": f"Bearer {tok['access_token']}"},
@@ -132,9 +158,17 @@ async def oauth_start(t: str = "") -> Response:
     if user_id is None:
         raise HTTPException(status_code=403, detail="This link has expired. Ask Gaia for a new one.")
 
+    if not settings.google_client_id or not settings.google_client_secret:
+        # Matches the comment on Settings.google_client_id: a checkout with no
+        # Workspace integration configured still boots, but these routes must
+        # actually refuse rather than hand the developer Google's error page
+        # for a redirect built with an empty client_id.
+        raise HTTPException(status_code=503, detail="Google Workspace integration is not configured.")
+
     import secrets
+    _evict_expired_states()
     state = secrets.token_urlsafe(24)
-    _PENDING_STATES[state] = str(user_id)
+    _PENDING_STATES[state] = (str(user_id), time.monotonic())
     query = urllib.parse.urlencode({
         "client_id": settings.google_client_id,
         "redirect_uri": f"https://{settings.domain}/oauth/callback",
@@ -152,12 +186,28 @@ async def oauth_start(t: str = "") -> Response:
 
 
 @app.get("/oauth/callback")
-async def oauth_callback(code: str = "", state: str = "") -> Response:
-    user_id = _PENDING_STATES.pop(state, None)
-    if user_id is None:
+async def oauth_callback(code: str = "", state: str = "", error: str = "") -> Response:
+    entry = _PENDING_STATES.pop(state, None)
+    if entry is None:
         raise HTTPException(status_code=403, detail="That consent did not come from this server.")
+    user_id, created_at = entry
+    if time.monotonic() - created_at > _STATE_TTL_SECONDS:
+        raise HTTPException(status_code=403, detail="This consent link has expired. Ask Gaia for a new one.")
 
-    result = await _exchange_code(code)
+    if error:
+        # Declining is the second most likely outcome of asking someone for
+        # access, right after granting it. Google redirects here with
+        # error=access_denied and no code when the developer clicks Cancel;
+        # that must read as a refusal, not a crash from a doomed exchange.
+        return Response(content="Google consent was declined. Ask Gaia for a new link to try again.",
+                        media_type="text/plain")
+
+    try:
+        result = await _exchange_code(code)
+    except OAuthExchangeError:
+        return Response(content="Google did not return an access grant. Ask Gaia for a new link and try again.",
+                        media_type="text/plain")
+
     async with tx() as conn:
         user = await users_db.get_by_id(conn, user_id)
         if user is None:
