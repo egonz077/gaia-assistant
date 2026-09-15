@@ -715,7 +715,7 @@ git commit -m "feat: signed one-time link binding a browser consent to a wa_id"
 
 ---
 
-### Task 6: `/oauth/start` and `/oauth/callback`
+### Task 6: `/oauth/google/start` and `/oauth/google/callback`
 
 **Files:**
 - Modify: `gaia/main.py`, `gaia/core/config.py`
@@ -723,7 +723,7 @@ git commit -m "feat: signed one-time link binding a browser consent to a wa_id"
 
 **Interfaces:**
 - Consumes: `oauth_link.mint/verify` (5), `google_accounts.upsert` (3), `users_db.get_email` (4).
-- Produces: `GET /oauth/start?t=<token>` → 307 to Google; `GET /oauth/callback?code=&state=` → text/plain result.
+- Produces: `GET /oauth/google/start?t=<token>` → 307 to Google; `GET /oauth/google/callback?code=&state=` → text/plain result.
 
 - [ ] **Step 1: Add the settings**
 
@@ -784,27 +784,27 @@ def client(monkeypatch, migrated):
 
 
 def test_start_redirects_to_google(client, ana):
-    r = client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}", follow_redirects=False)
+    r = client.get(f"/oauth/google/start?t={oauth_link.mint(ana.id)}", follow_redirects=False)
     assert r.status_code == 307
     assert "accounts.google.com" in r.headers["location"]
     assert "calendar.events.owned" in r.headers["location"]
 
 
 def test_start_consumes_nothing(client, ana):
-    """WhatsApp fetches URLs to build link previews. If /oauth/start consumed
+    """WhatsApp fetches URLs to build link previews. If /oauth/google/start consumed
     the one-time token, Meta's fetcher would burn it before the developer ever
     tapped the link, and every connect would fail with nothing in the logs."""
     token = oauth_link.mint(ana.id)
-    assert client.get(f"/oauth/start?t={token}", follow_redirects=False).status_code == 307
-    assert client.get(f"/oauth/start?t={token}", follow_redirects=False).status_code == 307
+    assert client.get(f"/oauth/google/start?t={token}", follow_redirects=False).status_code == 307
+    assert client.get(f"/oauth/google/start?t={token}", follow_redirects=False).status_code == 307
 
 
 def test_start_refuses_a_bad_token(client):
-    assert client.get("/oauth/start?t=rubbish", follow_redirects=False).status_code == 403
+    assert client.get("/oauth/google/start?t=rubbish", follow_redirects=False).status_code == 403
 
 
 def test_callback_refuses_an_unknown_state(client):
-    assert client.get("/oauth/callback?code=x&state=nonsense").status_code == 403
+    assert client.get("/oauth/google/callback?code=x&state=nonsense").status_code == 403
 
 
 async def test_callback_stores_the_grant(client, migrated, monkeypatch):
@@ -816,11 +816,11 @@ async def test_callback_stores_the_grant(client, migrated, monkeypatch):
         await c.commit()
 
     monkeypatch.setattr(main, "_exchange_code", _fake_exchange("ana@gaiagroupdevelopment.com"))
-    state = client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+    state = client.get(f"/oauth/google/start?t={oauth_link.mint(user.id)}",
                        follow_redirects=False).headers["location"]
     state = state.split("state=")[1].split("&")[0]
 
-    assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 200
+    assert client.get(f"/oauth/google/callback?code=x&state={state}").status_code == 200
     async with migrated.connection() as c:
         from psycopg.rows import dict_row
         c.row_factory = dict_row
@@ -840,10 +840,10 @@ async def test_callback_refuses_a_different_address(client, migrated, monkeypatc
         await c.commit()
 
     monkeypatch.setattr(main, "_exchange_code", _fake_exchange("someone@gaiagroupdevelopment.com"))
-    loc = client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+    loc = client.get(f"/oauth/google/start?t={oauth_link.mint(user.id)}",
                      follow_redirects=False).headers["location"]
     state = loc.split("state=")[1].split("&")[0]
-    assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 403
+    assert client.get(f"/oauth/google/callback?code=x&state={state}").status_code == 403
 
 
 async def test_callback_refuses_a_user_with_no_address(client, migrated, monkeypatch):
@@ -854,10 +854,10 @@ async def test_callback_refuses_a_user_with_no_address(client, migrated, monkeyp
         await c.commit()
 
     monkeypatch.setattr(main, "_exchange_code", _fake_exchange("nomail@gaiagroupdevelopment.com"))
-    loc = client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+    loc = client.get(f"/oauth/google/start?t={oauth_link.mint(user.id)}",
                      follow_redirects=False).headers["location"]
     state = loc.split("state=")[1].split("&")[0]
-    assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 403
+    assert client.get(f"/oauth/google/callback?code=x&state={state}").status_code == 403
 
 
 def _fake_exchange(email: str):
@@ -870,7 +870,7 @@ def _fake_exchange(email: str):
 - [ ] **Step 3: Run it and watch it fail**
 
 Run: `.venv/bin/python -m pytest tests/test_oauth_routes.py -q`
-Expected: FAIL — 404 on `/oauth/start`, since the route does not exist.
+Expected: FAIL — 404 on `/oauth/google/start`, since the route does not exist.
 
 - [ ] **Step 4: Add the routes**
 
@@ -898,7 +898,7 @@ async def _exchange_code(code: str) -> dict:
     """
     import httpx
 
-    redirect = f"https://{settings.domain}/oauth/callback"
+    redirect = f"https://{settings.domain}/oauth/google/callback"
     async with httpx.AsyncClient(timeout=15) as http:
         tok = (await http.post("https://oauth2.googleapis.com/token", data={
             "code": code,
@@ -916,7 +916,7 @@ async def _exchange_code(code: str) -> dict:
             "scopes": tok.get("scope", "")}
 
 
-@app.get("/oauth/start")
+@app.get("/oauth/google/start")
 async def oauth_start(t: str = "") -> Response:
     """Validates and redirects. Consumes NOTHING.
 
@@ -935,7 +935,7 @@ async def oauth_start(t: str = "") -> Response:
     _PENDING_STATES[state] = str(user_id)
     query = urllib.parse.urlencode({
         "client_id": settings.google_client_id,
-        "redirect_uri": f"https://{settings.domain}/oauth/callback",
+        "redirect_uri": f"https://{settings.domain}/oauth/google/callback",
         "response_type": "code",
         "scope": CALENDAR_SCOPE,
         "access_type": "offline",
@@ -949,7 +949,7 @@ async def oauth_start(t: str = "") -> Response:
                     headers={"location": f"https://accounts.google.com/o/oauth2/v2/auth?{query}"})
 
 
-@app.get("/oauth/callback")
+@app.get("/oauth/google/callback")
 async def oauth_callback(code: str = "", state: str = "") -> Response:
     user_id = _PENDING_STATES.pop(state, None)
     if user_id is None:
@@ -1006,7 +1006,7 @@ Run: `.venv/bin/python -m pytest -q` — Expected: PASS.
 git add gaia/main.py gaia/core/config.py gaia/core/db/users.py tests/test_oauth_routes.py tests/test_scope.py
 git commit -m "feat: consent surface binding a browser OAuth flow to a wa_id
 
-/oauth/start consumes nothing, because WhatsApp fetches URLs to build link
+/oauth/google/start consumes nothing, because WhatsApp fetches URLs to build link
 previews and would otherwise burn the one-time token before anyone tapped it."
 ```
 
@@ -1737,7 +1737,7 @@ def _needs_connection(conn, user: User) -> dict:
     cannot do calendars at all, which is false and unhelpful."""
     return {
         "needs_connection": True,
-        "link": f"https://{settings.domain}/oauth/start?t={oauth_link.mint(user.id)}",
+        "link": f"https://{settings.domain}/oauth/google/start?t={oauth_link.mint(user.id)}",
         "note": CONNECT_HINT,
     }
 

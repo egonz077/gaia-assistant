@@ -434,7 +434,7 @@ Two traps:
   "whose account is this", which is ownership, never "who may see it".
 - **Event-id columns on `leads` and `commitments`** are free — those rows are
   already visibility-scoped and inherit correctly.
-- **`/oauth/start` and `/oauth/callback`** would be the first routes in
+- **`/oauth/google/start` and `/oauth/google/callback`** would be the first routes in
   `gaia/main.py` that are neither `/health` nor `/webhook`. Consent cannot
   happen inside WhatsApp, as the design spec anticipated.
 

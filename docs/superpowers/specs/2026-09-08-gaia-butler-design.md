@@ -42,8 +42,8 @@ its own spec and lands on a foundation already proven in production.
 Gaia runs Google Workspace, so the OAuth app is configured **Internal**: no
 Google verification review, no unverified-app warning, no per-agent test-user
 list. This is the single biggest simplification available to increment 2 and the
-reason it should stay a small project. It does add a web surface — `/oauth/start`
-and `/oauth/callback`, since consent cannot happen inside WhatsApp — and refresh
+reason it should stay a small project. It does add a web surface — `/oauth/google/start`
+and `/oauth/google/callback`, since consent cannot happen inside WhatsApp — and refresh
 tokens in Postgres, encrypted with a key from `.env`, because a refresh token is
 standing access to someone's calendar.
 

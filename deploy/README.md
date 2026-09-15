@@ -108,11 +108,11 @@ arrangement rests on.
    authorized redirect URI:
 
    ```
-   https://<DOMAIN>/oauth/callback
+   https://<DOMAIN>/oauth/google/callback
    ```
 
    Google matches this string exactly — scheme, host and path, no trailing
-   slash. It must equal `https://$DOMAIN/oauth/callback` with the same
+   slash. It must equal `https://$DOMAIN/oauth/google/callback` with the same
    `DOMAIN` that is in `.env`, because that is what `settings.domain` builds
    the redirect from. A mismatch fails at Google's own screen with
    `redirect_uri_mismatch`, before the callback is ever reached.

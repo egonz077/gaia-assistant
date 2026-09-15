@@ -156,7 +156,7 @@ async def _exchange_code(code: str) -> dict:
     """
     import httpx
 
-    redirect = f"https://{settings.domain}/oauth/callback"
+    redirect = f"https://{settings.domain}/oauth/google/callback"
     async with httpx.AsyncClient(timeout=15) as http:
         resp = await http.post("https://oauth2.googleapis.com/token", data={
             "code": code,
@@ -186,7 +186,7 @@ async def _exchange_code(code: str) -> dict:
             "scopes": tok.get("scope", "")}
 
 
-@app.get("/oauth/start")
+@app.get("/oauth/google/start")
 async def oauth_start(t: str = "") -> Response:
     """Validates and redirects. Consumes NOTHING.
 
@@ -222,7 +222,7 @@ async def oauth_start(t: str = "") -> Response:
     _PENDING_STATES[state] = (str(user_id), time.monotonic())
     params = {
         "client_id": settings.google_client_id,
-        "redirect_uri": f"https://{settings.domain}/oauth/callback",
+        "redirect_uri": f"https://{settings.domain}/oauth/google/callback",
         "response_type": "code",
         "scope": " ".join(OAUTH_SCOPES),
         "access_type": "offline",
@@ -248,7 +248,7 @@ async def oauth_start(t: str = "") -> Response:
                     headers={"location": f"https://accounts.google.com/o/oauth2/v2/auth?{query}"})
 
 
-@app.get("/oauth/callback")
+@app.get("/oauth/google/callback")
 async def oauth_callback(code: str = "", state: str = "", error: str = "") -> Response:
     entry = _PENDING_STATES.pop(state, None)
     if entry is None:

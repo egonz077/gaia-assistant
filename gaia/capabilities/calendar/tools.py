@@ -46,7 +46,7 @@ def _needs_connection(conn, user: User) -> dict:
     cannot do calendars at all, which is false and unhelpful."""
     return {
         "needs_connection": True,
-        "link": f"https://{settings.domain}/oauth/start?t={oauth_link.mint(user.id)}",
+        "link": f"https://{settings.domain}/oauth/google/start?t={oauth_link.mint(user.id)}",
         "note": CONNECT_HINT,
     }
 

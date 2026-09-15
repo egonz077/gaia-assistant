@@ -44,25 +44,25 @@ the two, and that is the whole problem this section solves.
 ### Flow
 
 1. Developer asks for something calendar-shaped with no account connected.
-2. Gaia sends `https://{DOMAIN}/oauth/start?t=<token>` over WhatsApp. The token
+2. Gaia sends `https://{DOMAIN}/oauth/google/start?t=<token>` over WhatsApp. The token
    is signed, bound to one `user_id`, and expires in 10 minutes.
-3. `/oauth/start` validates the token and 302s to Google, carrying a fresh
+3. `/oauth/google/start` validates the token and 302s to Google, carrying a fresh
    `state` stored against that `user_id`.
-4. `/oauth/callback` validates `state`, exchanges the code, runs the checks
+4. `/oauth/google/callback` validates `state`, exchanges the code, runs the checks
    below, and stores the refresh token encrypted.
 
 Two new routes in `gaia/main.py` — the first that are neither `/health` nor
 `/webhook`. No new infrastructure: the droplet already terminates TLS for the
 webhook.
 
-### `/oauth/start` must consume nothing
+### `/oauth/google/start` must consume nothing
 
-WhatsApp builds link previews by fetching URLs. If `/oauth/start` consumed the
+WhatsApp builds link previews by fetching URLs. If `/oauth/google/start` consumed the
 one-time token, Meta's fetcher would burn it before the developer ever tapped
 the link, and every connect attempt would fail with nothing in the logs to
 explain it.
 
-So `/oauth/start` validates and redirects, consuming nothing. A preview fetcher
+So `/oauth/google/start` validates and redirects, consuming nothing. A preview fetcher
 receives a 302 to Google and achieves nothing, because consent needs a human.
 The token dies by TTL, or when a callback succeeds.
 
@@ -342,7 +342,7 @@ block the feature it exists to protect, which is a plausible enough mistake to
 be worth naming in the test's own docstring.
 
 Then: A's token cannot attach B's account; the domain check; `users.email` as a
-hard precondition; `state` mismatch refused; `/oauth/start` idempotent under a
+hard precondition; `state` mismatch refused; `/oauth/google/start` idempotent under a
 link-preview fetch; encryption round-trip plus an assertion the stored column is
 not plaintext; `pending_invites` single-use and expiry; `confirm_invite` using
 stored addresses — mostly a schema assertion, since it accepts none; overlap
