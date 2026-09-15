@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     # visibly at the vendor rather than quietly doing nothing.
     deepgram_api_key: str = ""
 
+    # Fernet key encrypting Google refresh tokens at rest. Empty by default so a
+    # checkout with no Workspace integration configured still imports and boots.
+    #
+    # Worth being honest about what this buys: nothing against someone who owns
+    # the droplet, since they hold both this and DATABASE_URL. It is aimed at the
+    # realistic leak -- a database dump or backup leaving the box -- where the
+    # key is not in the dump. Generate one with:
+    #   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    google_token_key: str = ""
+
     debounce_seconds: float = 3.0
 
 
