@@ -114,10 +114,10 @@ async def test_callback_refuses_a_user_with_no_address(client, migrated, monkeyp
     assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 403
 
 
-def _fake_exchange(email: str):
+def _fake_exchange(email: str, hd: str = "gaiagroupdevelopment.com"):
     async def _exchange(code: str):
-        return {"refresh_token": "1//refresh", "email": email,
-                "scopes": "https://www.googleapis.com/auth/calendar.events.owned"}
+        return {"refresh_token": "1//refresh", "email": email, "hd": hd,
+                "scopes": "openid email https://www.googleapis.com/auth/calendar.events.owned"}
     return _exchange
 
 
@@ -137,38 +137,46 @@ def test_callback_declined_consent_returns_a_clean_message(client, ana):
     assert "declined" in r.text.lower()
 
 
+def _token_endpoint(handler):
+    """Replacement for httpx.AsyncClient that answers through MockTransport.
+
+    Real Response objects, so status codes are as real as the JSON: a
+    hand-rolled double with only .json() on it is how the missing status check
+    stayed invisible.
+    """
+    import httpx
+
+    # Bound before monkeypatch replaces the name, or the factory calls itself.
+    real = httpx.AsyncClient
+
+    def factory(*a, **kw):
+        return real(transport=httpx.MockTransport(handler))
+
+    return factory
+
+
+def _id_token(**claims) -> str:
+    """A JWT whose signature is deliberately nonsense -- see _id_token_claims."""
+    import base64
+    import json
+
+    def seg(obj):
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
+
+    return f"{seg({'alg': 'RS256'})}.{seg(claims)}.not-a-real-signature"
+
+
 async def test_exchange_code_raises_cleanly_without_access_token(monkeypatch):
     """A token response with no access_token -- a revoked client, a bad code
     -- used to reach tok['access_token'] and blow up with a raw KeyError.
     _exchange_code must turn that into something the route can catch."""
     import httpx
 
-    class _FakeResponse:
-        def __init__(self, data):
-            self._data = data
+    def handler(request):
+        # What Google actually sends back for a bad/expired code.
+        return httpx.Response(400, json={"error": "invalid_grant"})
 
-        def json(self):
-            return self._data
-
-    class _FakeAsyncClient:
-        def __init__(self, *a, **kw):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *a):
-            return False
-
-        async def post(self, url, data=None):
-            # What Google actually sends back for a bad/expired code: no
-            # access_token, just an error string.
-            return _FakeResponse({"error": "invalid_grant"})
-
-        async def get(self, url, headers=None):
-            raise AssertionError("must not fetch userinfo without an access_token")
-
-    monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+    monkeypatch.setattr(httpx, "AsyncClient", _token_endpoint(handler))
     with pytest.raises(main.OAuthExchangeError):
         await main._exchange_code("bad-code")
 
@@ -232,3 +240,109 @@ def test_start_refuses_when_google_is_not_configured(client, ana, monkeypatch):
     monkeypatch.setattr(main.settings, "google_client_id", "")
     r = client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}", follow_redirects=False)
     assert r.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# The consent flow could not complete at all against real Google credentials:
+# the token held calendar.events.owned alone, /oauth2/v2/userinfo is served
+# only to tokens holding openid, email or profile, and the unchecked 403 made
+# the address "" -- so every connect was refused as "That account cannot be
+# connected", pointing whoever read the logs at the wrong cause.
+# ---------------------------------------------------------------------------
+
+def test_start_requests_openid_and_email(client, ana):
+    """openid is what makes the token response carry an id_token, and the
+    id_token is what carries the address. Without them the flow has no way to
+    learn who consented that does not go through an endpoint our scopes are
+    not served by."""
+    import urllib.parse
+
+    loc = client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}",
+                     follow_redirects=False).headers["location"]
+    scope = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query)["scope"][0].split()
+    assert "openid" in scope
+    assert "email" in scope
+    assert main.CALENDAR_SCOPE in scope
+
+
+async def test_exchange_code_reads_the_address_from_the_id_token(monkeypatch):
+    """One call, not two. The id_token comes back from the token endpoint
+    itself, so the userinfo round trip -- which our scopes are not served by
+    -- buys nothing and was the whole bug."""
+    import httpx
+
+    urls = []
+
+    def handler(request):
+        urls.append(str(request.url))
+        return httpx.Response(200, json={
+            "access_token": "ya29",
+            "refresh_token": "1//refresh",
+            "scope": f"openid email {main.CALENDAR_SCOPE}",
+            "id_token": _id_token(email="ana@gaiagroupdevelopment.com",
+                                  hd="gaiagroupdevelopment.com"),
+        })
+
+    monkeypatch.setattr(httpx, "AsyncClient", _token_endpoint(handler))
+    out = await main._exchange_code("good-code")
+
+    assert out["email"] == "ana@gaiagroupdevelopment.com"
+    assert out["hd"] == "gaiagroupdevelopment.com"
+    assert out["refresh_token"] == "1//refresh"
+    assert urls == ["https://oauth2.googleapis.com/token"]
+
+
+async def test_exchange_code_raises_on_a_token_endpoint_error(monkeypatch):
+    """A scope mismatch, a rotated secret, Google erroring: the status must be
+    read. Parsing the body regardless is how a 403 turned into an empty
+    address and a refusal that blamed the developer's account."""
+    import httpx
+
+    def handler(request):
+        # Not every failure is JSON. A proxy or a load balancer in front of
+        # Google answers in HTML, and .json() on that raises something the
+        # callback does not catch.
+        return httpx.Response(502, html="<html>Bad Gateway</html>")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _token_endpoint(handler))
+    with pytest.raises(main.OAuthExchangeError):
+        await main._exchange_code("code")
+
+
+async def test_callback_refuses_an_account_google_does_not_place_in_the_domain(
+        client, migrated, monkeypatch):
+    """The domain check is the hd claim, not the address's suffix. Google
+    signs hd and says so: "the value can be trusted". An address is only a
+    string, and this account's ends in the right one -- a suffix check passes
+    it, and the Internal exemption that rests on the domain check is then
+    resting on string matching."""
+    async with migrated.connection() as c:
+        from psycopg.rows import dict_row
+        c.row_factory = dict_row
+        user = await users_db.create_user(
+            c, name="Ana", wa_id="13055558805", email="ana@gaiagroupdevelopment.com")
+        await c.commit()
+
+    monkeypatch.setattr(main, "_exchange_code",
+                        _fake_exchange("ana@gaiagroupdevelopment.com", hd=""))
+    loc = client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+                     follow_redirects=False).headers["location"]
+    state = loc.split("state=")[1].split("&")[0]
+    assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 403
+
+
+async def test_callback_refuses_a_grant_with_no_email_claim(client, migrated, monkeypatch):
+    """A refusal, not an empty-string comparison that happens to fail. Nothing
+    about "" belongs in a check about who consented."""
+    async with migrated.connection() as c:
+        from psycopg.rows import dict_row
+        c.row_factory = dict_row
+        user = await users_db.create_user(
+            c, name="Ana", wa_id="13055558806", email="ana@gaiagroupdevelopment.com")
+        await c.commit()
+
+    monkeypatch.setattr(main, "_exchange_code", _fake_exchange(""))
+    loc = client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+                     follow_redirects=False).headers["location"]
+    state = loc.split("state=")[1].split("&")[0]
+    assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 403

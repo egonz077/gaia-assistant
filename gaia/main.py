@@ -1,3 +1,5 @@
+import base64
+import json
 import logging
 import time
 import urllib.parse
@@ -87,6 +89,15 @@ async def inbound(request: Request) -> dict:
 
 CALENDAR_SCOPE = "https://www.googleapis.com/auth/calendar.events.owned"
 
+# openid is what makes the token response carry an id_token, and the id_token
+# is the only thing in this flow that says who consented: /oauth2/v2/userinfo
+# is served only to tokens holding openid, email or profile, so a token with
+# the calendar scope alone gets a 403 there and the callback learns nothing.
+# Both are non-sensitive -- unlike the Gmail scopes in research 2 -- so they
+# cost the app's Internal configuration, and its verification exemption,
+# nothing at all.
+OAUTH_SCOPES = ("openid", "email", CALENDAR_SCOPE)
+
 # Matches oauth_link.mint's own default TTL. A pending state can't legitimately
 # outlive the consent link that created it, so evicting anything older costs a
 # live consent nothing -- and refusing anything older closes the gap between
@@ -109,15 +120,36 @@ def _evict_expired_states() -> None:
 
 
 class OAuthExchangeError(Exception):
-    """Google's token endpoint answered without an access_token -- a revoked
-    client, a reused or expired code, Google erroring. Without this, the
-    lookup below (tok['access_token']) raises a bare KeyError that FastAPI
-    turns into an unhandled 500; this lets the callback show a clean refusal
-    instead."""
+    """The exchange did not yield a usable grant -- a non-200 from the token
+    endpoint, a revoked client, a reused or expired code, an id_token that
+    will not decode. Without this, the lookup below (tok['access_token'])
+    raises a bare KeyError that FastAPI turns into an unhandled 500; this lets
+    the callback show a clean refusal instead, and say why in the log."""
+
+
+def _id_token_claims(id_token: str) -> dict:
+    """The id_token's payload, with its signature deliberately not verified.
+
+    Google documents the exemption precisely: a token received "directly from
+    Google" over HTTPS, in response to our own client-authenticated request,
+    needs no signature validation, because the channel already establishes who
+    sent it. That is exactly this code path and nothing else. The exemption
+    would NOT hold for an id_token arriving any other way -- posted to a
+    webhook, forwarded by a browser, read out of a header someone else could
+    write -- where a JWKS lookup is the only thing standing between us and a
+    forged `hd`. Anyone reusing this helper for such a token is reusing the
+    exemption too, and it does not travel.
+    """
+    try:
+        payload = id_token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)  # JWTs drop base64 padding
+        return json.loads(base64.urlsafe_b64decode(payload))
+    except Exception as exc:
+        raise OAuthExchangeError(f"id_token could not be decoded: {exc}") from exc
 
 
 async def _exchange_code(code: str) -> dict:
-    """Swap an authorization code for a refresh token and the account's address.
+    """Swap an authorization code for a refresh token and the account's identity.
 
     Separated so tests can replace it: the alternative is an env var only tests
     set, which this codebase does not do.
@@ -126,21 +158,31 @@ async def _exchange_code(code: str) -> dict:
 
     redirect = f"https://{settings.domain}/oauth/callback"
     async with httpx.AsyncClient(timeout=15) as http:
-        tok = (await http.post("https://oauth2.googleapis.com/token", data={
+        resp = await http.post("https://oauth2.googleapis.com/token", data={
             "code": code,
             "client_id": settings.google_client_id,
             "client_secret": settings.google_client_secret,
             "redirect_uri": redirect,
             "grant_type": "authorization_code",
-        })).json()
-        if "access_token" not in tok:
-            raise OAuthExchangeError(tok.get("error", "no access_token in token response"))
-        who = (await http.get(
-            "https://www.googleapis.com/oauth2/v2/userinfo",
-            headers={"Authorization": f"Bearer {tok['access_token']}"},
-        )).json()
+        })
+    # Read before parsing. A scope mismatch, a rotated secret or a proxy's HTML
+    # error page all answer non-200, and parsing regardless turned Google
+    # saying no into an empty address and a refusal that blamed the developer's
+    # own account -- with nothing in the logs, because nothing checked.
+    if resp.status_code != 200:
+        raise OAuthExchangeError(f"token endpoint returned {resp.status_code}: {resp.text[:300]}")
+    tok = resp.json()
+    if "access_token" not in tok:
+        raise OAuthExchangeError(tok.get("error", "no access_token in token response"))
+
+    # The identity comes from the token response itself. The second call this
+    # replaces went to /oauth2/v2/userinfo, which our scopes are not served by.
+    claims = _id_token_claims(tok.get("id_token", ""))
     return {"refresh_token": tok.get("refresh_token", ""),
-            "email": who.get("email", ""),
+            "email": claims.get("email", ""),
+            # Google's own assertion of the account's Workspace domain. A
+            # consumer account carries no hd claim at all.
+            "hd": claims.get("hd", ""),
             "scopes": tok.get("scope", "")}
 
 
@@ -173,7 +215,7 @@ async def oauth_start(t: str = "") -> Response:
         "client_id": settings.google_client_id,
         "redirect_uri": f"https://{settings.domain}/oauth/callback",
         "response_type": "code",
-        "scope": CALENDAR_SCOPE,
+        "scope": " ".join(OAUTH_SCOPES),
         "access_type": "offline",
         "prompt": "consent",
         "state": state,
@@ -204,7 +246,11 @@ async def oauth_callback(code: str = "", state: str = "", error: str = "") -> Re
 
     try:
         result = await _exchange_code(code)
-    except OAuthExchangeError:
+    except OAuthExchangeError as exc:
+        # Logged, because the failure the developer sees is generic by design
+        # and the cause is not: a scope mismatch and a reused code look
+        # identical from the browser.
+        log.warning("Google code exchange failed for user %s: %s", user_id, exc)
         return Response(content="Google did not return an access grant. Ask Gaia for a new link and try again.",
                         media_type="text/plain")
 
@@ -216,7 +262,16 @@ async def oauth_callback(code: str = "", state: str = "", error: str = "") -> Re
         # Both checks, in this order. The domain is what keeps the app's
         # Internal configuration true; the equality is what stops a forwarded
         # link binding a colleague's account to this developer's identity.
-        if not expected or not result["email"].endswith("@" + settings.google_domain):
+        #
+        # The domain is read from the id_token's `hd` claim rather than from
+        # the address's suffix. Google signs hd and says so -- "the value can
+        # be trusted" -- where an address is a string that merely ends in
+        # something. A missing claim is a refusal in its own right, not an ""
+        # that happens to compare false: nothing about an empty string belongs
+        # in a decision about who consented.
+        if not expected or not result["email"] or not result["hd"]:
+            raise HTTPException(status_code=403, detail="That account cannot be connected.")
+        if result["hd"] != settings.google_domain:
             raise HTTPException(status_code=403, detail="That account cannot be connected.")
         if result["email"].lower() != expected.lower():
             raise HTTPException(status_code=403, detail="That is not the account we expected.")
