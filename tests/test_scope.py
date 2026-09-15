@@ -56,6 +56,11 @@ OWNERSHIP_SCOPED = {
         "'my commitments'. Ownership for the same reason as open_for, and "
         "because complete() refuses anything the user does not own — a "
         "visibility-scoped list would offer rows that then decline to close.",
+    "gaia.core.db.google_accounts.get":
+        "one developer's own OAuth grant. Not visibility-scoped because there "
+        "is no setting at which a colleague's refresh token is readable -- a "
+        "token answers whose account this is, which is ownership, never who "
+        "may see it. The table has no visibility column for the same reason.",
     "gaia.core.db.leads.due_for":
         "the digest again: leads this person must act on. The docstring on it "
         "spells out why visible() would be wrong here.",
