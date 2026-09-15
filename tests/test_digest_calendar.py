@@ -43,14 +43,16 @@ def _events_http(events):
 
 
 async def test_revocation_is_announced_the_first_time(conn, ana):
+    """calendar_section only DECIDES to announce -- it must not stamp
+    revoked_notified_at itself, because at this point nobody has been told
+    anything yet. Stamping here would be true regardless of whether the
+    WhatsApp send that follows actually lands; only send_digest, after
+    delivery is confirmed, is in a position to say the notice was given."""
     await ga.upsert(conn, ana, google_email="a@x.com", refresh_token="1//r", scopes="s")
     async with _revoking_http() as http:
         out = await digest.calendar_section(conn, ana, http=http, today="2026-09-16")
     assert out == {"revoked": True}
-    # The announcement itself must stamp the column that stops it repeating --
-    # calendar_section is the only place that says "revoked" to the user, so
-    # it is the only place that can honestly mark it said.
-    assert (await ga.get(conn, ana))["revoked_notified_at"] is not None
+    assert (await ga.get(conn, ana))["revoked_notified_at"] is None
 
 
 async def test_revocation_is_not_repeated_once_notified(conn, ana):
@@ -125,6 +127,9 @@ async def test_quiet_pipeline_with_a_revoked_grant_still_sends_once(conn, ana, m
     assert sent is True
     prompt = str(client.requests[0]["messages"])
     assert "revoked" in prompt
+    # Stamped only now, because the send that just landed is what makes
+    # "we told them" true.
+    assert (await ga.get(conn, ana))["revoked_notified_at"] is not None
 
     # And, since the pipeline is still empty and the grant is still revoked,
     # a second run says nothing further -- announced exactly once.
@@ -132,3 +137,23 @@ async def test_quiet_pipeline_with_a_revoked_grant_still_sends_once(conn, ana, m
     async with _revoking_http() as http2:
         sent_again = await digest.send_digest(conn, client2, wa, ana, pool=migrated, http=http2)
     assert sent_again is False
+
+
+async def test_a_rejected_delivery_does_not_stamp_revoked_notified_at(conn, ana, migrated):
+    """A WhatsApp rejection is not an exception -- calendar_section has
+    already decided to announce by the time send_digest learns the send
+    failed. Stamping regardless would tell the user nothing and then, because
+    the notice is deliberately once-only, never ask again: the grant stays
+    silently broken forever. That is the exact "not never" failure the column
+    exists to prevent, reintroduced one layer down. The next tick must retry,
+    which means the column must still be NULL after a rejected send."""
+    await users_db.touch_inbound(conn, ana)
+    await ga.upsert(conn, ana, google_email="a@x.com", refresh_token="1//r", scopes="s")
+    wa = FakeWhatsApp(reject_sends=True)
+    client = FakeAnthropic([FakeResponse([TextBlock("Morning! Your calendar disconnected.")])])
+
+    async with _revoking_http() as http:
+        sent = await digest.send_digest(conn, client, wa, ana, pool=migrated, http=http)
+
+    assert sent is False
+    assert (await ga.get(conn, ana))["revoked_notified_at"] is None

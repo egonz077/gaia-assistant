@@ -193,7 +193,15 @@ async def calendar_section(conn, user: User, *, http, today: str) -> dict | None
         # revoked deliberately is its own failure. revoked_notified_at (not a
         # last_digest_on comparison -- see google_accounts.mark_revoked_notified
         # for why that was wrong) is the single source of truth for "have we
-        # already said this", stamped here, at the moment it is said.
+        # already said this" -- but this function only DECIDES to announce.
+        # It must not stamp the column itself: at this point nobody has been
+        # told anything yet, and a WhatsApp rejection a few lines later in
+        # send_digest is not an exception, so it would run right past a stamp
+        # written here. That leaves the user never told AND -- because the
+        # notice is deliberately once-only -- never asked again, the grant
+        # silently broken forever. send_digest stamps it, in the same place
+        # and the same way it gates leads/commitments nudge counts: only
+        # after `delivered` is confirmed True.
         #
         # A user who never connected at all has no revoked_at and is never
         # nagged: they are not missing anything, they simply do not use it.
@@ -204,7 +212,6 @@ async def calendar_section(conn, user: User, *, http, today: str) -> dict | None
             return None
         if account["revoked_notified_at"] is not None:
             return None
-        await ga_db.mark_revoked_notified(conn, user)
         return {"revoked": True}
     except Exception:
         log.exception("calendar section failed for %s", user.id)
@@ -269,6 +276,15 @@ async def send_digest(conn, client, wa, user: User, pool, *, http=None) -> bool:
 
     await leads_db.mark_nudged(conn, user, [r["id"] for r in leads])
     await commitments_db.mark_nudged(conn, user, [r["id"] for r in commitments])
+    if calendar and calendar.get("revoked"):
+        # Same gate as the nudge counts just above: calendar_section decided
+        # to announce, but only a confirmed delivery makes "we told them"
+        # true. Stamping earlier -- e.g. inside calendar_section, before
+        # delivery is known -- would survive a rejected send and silence a
+        # still-broken grant forever, since the notice never repeats.
+        from gaia.core.db import google_accounts as ga_db
+
+        await ga_db.mark_revoked_notified(conn, user)
     await messages_db.log(conn, user, "assistant", text)
     await conn.execute(
         "UPDATE users SET last_digest_on = %s WHERE id = %s",
