@@ -62,7 +62,7 @@ gaia/
     stats.py           cost priced on read, product counts derived on read
     stats_html.py      the same numbers as one self-contained page
     admin.py           CLI: add-user, list-users, deactivate, merge-contacts,
-                       stats
+                       set-email, stats
     db/
       pool.py          psycopg async pool, tx() context manager
       scope.py         visible() — the one place read-filtering lives
@@ -76,9 +76,12 @@ gaia/
                        set_meeting_visibility
     leads/             create_lead, query_leads, update_lead, list_commitments,
                        complete_commitments, update_commitment
+    calendar/          check_availability, create_event, propose_invite,
+                       confirm_invite, cancel_event
   jobs/digest.py       per-user morning follow-up digest
 migrations/             001_init, 002_developer_role, 003_llm_calls,
-                        004_model_calls, 005_voice_note_source
+                        004_model_calls, 005_voice_note_source, 006_google_workspace,
+                        007_revoked_notified_at
 deploy/                backup.sh, restore.sh, compose.dev.yml, runbook
 evals/smoke.py         live end-to-end check against the real Anthropic API
 tests/

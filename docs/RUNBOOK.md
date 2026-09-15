@@ -80,6 +80,9 @@ Every value below lives only in `.env` on the droplet. **None are in git**
 | `WA_APP_SECRET` | `app` | Verifies the `X-Hub-Signature-256` on every inbound webhook. This is what stops anyone who finds the URL from injecting fake messages. | Forged inbound messages. Rotate in the Meta app dashboard. |
 | `WA_VERIFY_TOKEN` | `app` | A string you invent. Meta echoes it once when you first subscribe the webhook. | Low. Only useful during webhook setup. |
 | `WA_PHONE_NUMBER_ID` | `app`, `jobs` | Which WhatsApp business number to send from. Not a secret, but lives with them. | Not sensitive. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | `app` | Internal OAuth application for Google Workspace. "Internal" is load-bearing: it exempts the app from [Google's verification review](https://developers.google.com/identity/protocols/oauth2/requirements) and the annual CASA security assessment. This exemption holds only while all users authenticate via the Workspace domain. One contractor on a personal Gmail forces an External app, which requires verification. | OAuth token and user impersonation. Rotate in Google Cloud console. See [§7](#7-routine-operations) on the deploy sequence: `GOOGLE_DOMAIN` gating must be set before **any user** can connect. |
+| `GOOGLE_TOKEN_KEY` | `app` | Fernet key encrypting Google refresh tokens at rest in the database. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`. | **Rotating it orphans every stored token.** Every user must reconnect. The cost is developer onboarding friction, not a security incident — refresh tokens still decrypt to invalid streams, not to other users' tokens. |
+| `GOOGLE_DOMAIN` | `app` | The only Workspace domain (`example.com`) whose accounts may connect. Validated by the OAuth callback after Google's consent flow. | Permit malicious Workspace grants. Rotate in `.env`. |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | `backup` | DigitalOcean Spaces key pair. The `aws` CLI reads these exact names natively. | **Every nightly database dump.** This is the highest-value pair here — a backup is the whole client book in one file. Rotate in the DO control panel. |
 | `SPACES_BUCKET` / `SPACES_ENDPOINT` | `backup` | Where dumps go. Currently `gaia-backups` at `nyc3`. | Not sensitive on their own. |
 | `DOMAIN` | `caddy` **only** | The hostname Caddy provisions TLS for. | Not sensitive — it is public DNS. |
@@ -265,6 +268,33 @@ docker compose exec -T app python -c \
   "import urllib.request; print(urllib.request.urlopen('http://localhost:8000/health').read())"
 docker compose logs app jobs --since 3m | grep -iE "error|traceback"
 ```
+
+### Deploy the Google Workspace integration
+
+Two migrations ship with this change: `006_google_workspace.sql` applies the
+schema (the `users.email` column, calendar event links, Google account storage),
+and `007_revoked_notified_at.sql` adds a timestamp for tracking whether a token
+revocation has been announced. Both apply themselves at startup.
+
+**The deploy order is not optional.**
+
+Every existing user predates the `users.email` column. The OAuth callback refuses
+any account whose address does not match that column's value — the precondition
+for connecting — which means the callback is a 403 until the address is set. Do
+this in the right order, or the first developer who tries the feature gets a
+blocking error with no on-screen explanation of how to fix it.
+
+```
+1. Deploy and wait for startup.
+2. For every existing developer:
+   docker compose exec -T app python -m gaia.core.admin set-email \
+       --phone <country_code_no_plus> --email <address>
+3. Only then announce the feature or add documentation linking to it.
+```
+
+The `set-email` command is idempotent and required for existing users, optional
+for new ones added after this migration. Announce before step 2 and you have
+created a developer who cannot use the feature and must ask for help.
 
 ### Back up and restore
 
