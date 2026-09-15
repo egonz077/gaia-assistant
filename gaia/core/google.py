@@ -31,14 +31,27 @@ async def access_token(conn, user: User, *, http) -> str:
         "refresh_token": account["refresh_token"],
         "grant_type": "refresh_token",
     })
+
+    # Check status before parsing JSON to avoid JSONDecodeError on HTML error responses
+    # (e.g., 502 Bad Gateway during outages). If the response is not JSON-parseable,
+    # treat it as a transient error, not a revocation.
+    if resp.status_code != 200:
+        try:
+            body = resp.json()
+            if body.get("error") == "invalid_grant":
+                # invalid_grant is the documented signal for a revoked or expired
+                # refresh token. Marking it here means the digest can say so once,
+                # instead of failing quietly every morning.
+                log.warning(f"Google grant revoked for user {user.id}")
+                await ga_db.revoke(conn, user)
+                raise RevokedGrant(f"grant revoked for {user.id}")
+        except ValueError:
+            # Not JSON (e.g., HTML error page). Treat as a transient error.
+            pass
+        raise RuntimeError(f"token refresh failed: {resp.status_code} {resp.text[:300]}")
+
     body = resp.json()
-    if resp.status_code != 200 or "access_token" not in body:
-        # invalid_grant is the documented signal for a revoked or expired
-        # refresh token. Marking it here means the digest can say so once,
-        # instead of failing quietly every morning.
-        if body.get("error") == "invalid_grant":
-            await ga_db.revoke(conn, user)
-            raise RevokedGrant(f"grant revoked for {user.id}")
+    if "access_token" not in body:
         raise RuntimeError(f"token refresh failed: {resp.status_code} {body}")
     return body["access_token"]
 

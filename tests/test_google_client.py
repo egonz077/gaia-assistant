@@ -62,3 +62,31 @@ async def test_request_attaches_the_bearer_token(conn, ana):
         assert await google.request(
             conn, ana, "GET", "https://www.googleapis.com/calendar/v3/x", http=http
         ) == {"ok": True}
+
+
+async def test_html_error_response_raises_runtime_error(conn, ana):
+    """A 502 with HTML body should raise RuntimeError, not JSONDecodeError,
+    and should NOT revoke the grant. This happens during actual outages."""
+    await ga.upsert(conn, ana, google_email="a@x.com", refresh_token="1//r", scopes="s")
+
+    def handler(request):
+        return httpx.Response(502, content=b"<html><body>Bad Gateway</body></html>",
+                             headers={"content-type": "text/html"})
+
+    async with _http(handler) as http:
+        with pytest.raises(RuntimeError):
+            await google.access_token(conn, ana, http=http)
+    # Verify grant was NOT revoked
+    assert (await ga.get(conn, ana))["revoked_at"] is None
+
+
+async def test_already_revoked_account_raises_revoked(conn, ana):
+    """An account that exists but is already revoked should raise RevokedGrant
+    without making any network calls."""
+    await ga.upsert(conn, ana, google_email="a@x.com", refresh_token="1//r", scopes="s")
+    await ga.revoke(conn, ana)
+
+    # Should raise RevokedGrant immediately without calling the handler
+    async with _http(lambda r: httpx.Response(500, json={})) as http:
+        with pytest.raises(google.RevokedGrant):
+            await google.access_token(conn, ana, http=http)
