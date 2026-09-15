@@ -16,6 +16,8 @@ import httpx
 from gaia.capabilities.calendar import client as cal
 from gaia.core import google, oauth_link
 from gaia.core.config import settings
+from gaia.core.db import commitments as commitments_db
+from gaia.core.db import leads as leads_db
 from gaia.core.db import pending_invites as pi_db
 from gaia.core.models import User
 
@@ -95,6 +97,14 @@ async def create_event(conn, user: User, args: dict, *, http=None) -> dict:
             )
     except google.RevokedGrant:
         return _needs_connection(conn, user)
+    # Both directions, written together. extendedProperties (set in
+    # client.create_event) lets events.list find Gaia's events server-side;
+    # the column is the durable half, because the calendar is not a database
+    # and people delete events.
+    if args.get("lead_id"):
+        await leads_db.set_calendar_event(conn, user, args["lead_id"], ev["id"])
+    if args.get("commitment_id"):
+        await commitments_db.set_calendar_event(conn, user, args["commitment_id"], ev["id"])
     return {"event_id": ev.get("id"),
             "meet_link": ev.get("hangoutLink"),
             "starts": start.strftime("%A %Y-%m-%d %H:%M"),

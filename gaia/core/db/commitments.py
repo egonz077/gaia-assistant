@@ -2,7 +2,8 @@ from uuid import UUID
 
 from gaia.core.models import User
 
-_SELECT = """SELECT c.id, c.description, c.due_at, c.nudge_count, ct.name AS contact
+_SELECT = """SELECT c.id, c.description, c.due_at, c.nudge_count,
+                    ct.name AS contact, c.calendar_event_id
              FROM commitments c
              LEFT JOIN contacts ct ON ct.id = c.contact_id"""
 
@@ -143,3 +144,28 @@ async def mark_nudged(conn, user: User, ids: list[UUID]) -> None:
            WHERE id = ANY(%s) AND user_id = %s""",
         (ids, user.id),
     )
+
+
+async def set_calendar_event(conn, user: User, commitment_id, event_id: str) -> bool:
+    cur = await conn.execute(
+        """UPDATE commitments SET calendar_event_id = %s
+           WHERE id = %s AND user_id = %s RETURNING id""",
+        (event_id, commitment_id, user.id),
+    )
+    return await cur.fetchone() is not None
+
+
+async def by_event_ids(conn, user: User, event_ids: list[str]) -> dict:
+    """The commitments half of 'what does this person's day hold'. Ownership
+    for the same reason as open_for; an id matching nothing is normal, because
+    people delete events."""
+    if not event_ids:
+        return {}
+    cur = await conn.execute(
+        f"""{_SELECT}
+            WHERE c.user_id = %(uid)s AND c.calendar_event_id = ANY(%(ids)s)""",
+        {"uid": user.id, "ids": list(event_ids)},
+    )
+    return {r["calendar_event_id"]: {"commitment_id": r["id"],
+                                     "description": r["description"]}
+            for r in await cur.fetchall()}

@@ -64,6 +64,12 @@ OWNERSHIP_SCOPED = {
     "gaia.core.db.leads.due_for":
         "the digest again: leads this person must act on. The docstring on it "
         "spells out why visible() would be wrong here.",
+    "gaia.core.db.leads.by_event_ids":
+        "which of this person's own calendar events belong to which lead, for "
+        "their digest. Ownership for the same reason as due_for: a colleague's "
+        "org-visible lead is readable but is not this person's day.",
+    "gaia.core.db.commitments.by_event_ids":
+        "the commitments half of the same question, scoped the same way.",
     "gaia.core.db.messages.recent":
         "one person's own conversation log. Another developer's messages are "
         "not org-visible content; they are simply not this user's thread.",

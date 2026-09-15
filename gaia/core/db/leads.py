@@ -5,7 +5,7 @@ from gaia.core.db.scope import visible
 from gaia.core.models import User
 
 _SELECT = """SELECT l.id, ct.name, l.description, l.status, l.next_action_at,
-                    l.next_action_note, l.nudge_count
+                    l.next_action_note, l.nudge_count, l.calendar_event_id
              FROM leads l JOIN contacts ct ON ct.id = l.contact_id"""
 
 _UPDATABLE = ("status", "next_action_at", "next_action_note", "description")
@@ -93,3 +93,37 @@ async def mark_nudged(conn, user: User, ids: list[UUID]) -> None:
            WHERE id = ANY(%s) AND user_id = %s""",
         (ids, user.id),
     )
+
+
+async def set_calendar_event(conn, user: User, lead_id, event_id: str) -> bool:
+    """The event for this lead's current next action -- not a history. What
+    already happened lives in meetings; a second home for the same truth is
+    how the two drift apart."""
+    cur = await conn.execute(
+        """UPDATE leads SET calendar_event_id = %s, updated_at = now()
+           WHERE id = %s AND user_id = %s RETURNING id""",
+        (event_id, lead_id, user.id),
+    )
+    return await cur.fetchone() is not None
+
+
+async def by_event_ids(conn, user: User, event_ids: list[str]) -> dict:
+    """Which of today's events belong to which lead.
+
+    Ownership-scoped, same reason as due_for: this answers what THIS person's
+    day holds. A colleague's org-visible lead attached to their own event is
+    readable but is not this person's day.
+
+    An id that matches nothing is normal, not an error -- people delete events,
+    and a calendar_event_id pointing at a 404 is the expected end state.
+    """
+    if not event_ids:
+        return {}
+    cur = await conn.execute(
+        f"""{_SELECT}
+            WHERE l.user_id = %(uid)s AND l.calendar_event_id = ANY(%(ids)s)""",
+        {"uid": user.id, "ids": list(event_ids)},
+    )
+    return {r["calendar_event_id"]: {"lead_id": r["id"], "contact": r["name"],
+                                     "description": r["description"]}
+            for r in await cur.fetchall()}
