@@ -246,3 +246,62 @@ async def test_list_pending_invites_schema_takes_nothing():
     from gaia.capabilities.calendar import CAPABILITY
     tool = next(t for t in CAPABILITY.tools if t.name == "list_pending_invites")
     assert tool.input_schema.get("required", []) == []
+
+
+async def test_list_pending_invites_says_plainly_that_nothing_is_sent(committed):
+    """Live, the model read an OPEN pending row as "invite already out" and
+    told the user so. A row in this list is by definition unsent; the payload
+    has to say it, not leave it to be inferred from the tool's name."""
+    conn, user = committed
+    await pi.create(conn, user, event_id="evt-1", emails=["a@x.com"])
+    async with _http([], _EVENT) as http:
+        out = await tools.list_pending_invites(conn, user, {}, http=http)
+    assert "not sent" in out["pending"][0]["status"].lower()
+    assert "none of these" in out["note"].lower()
+
+
+async def test_create_event_marks_the_event_as_made_by_gaia(committed):
+    """So cleanup can target what Gaia made and leave the developer's own
+    entries alone. Set always -- not only when a lead or commitment is linked."""
+    import json as _json
+    conn, user = committed
+    sent = []
+    async with _http(sent, {"id": "evt-9"}) as http:
+        await tools.create_event(conn, user, {
+            "summary": "Test", "date": "2026-09-16", "start_time": "10:00"}, http=http)
+    body = _json.loads(sent[0]["body"])
+    assert body["extendedProperties"]["private"]["gaia"] == "1"
+
+
+async def test_list_events_on_returns_ids_titles_and_attendees(committed):
+    """cancel_event needs an id, and until this existed nothing returned one
+    for an event from an earlier turn: check_availability strips ids and
+    titles by design, and list_pending_invites shows only open approvals. The
+    model said, truthfully, "the ids are gone on my side" -- and could not
+    cancel duplicates it had itself created."""
+    conn, user = committed
+    events = {"items": [
+        {"id": "evt-a", "summary": "Calendar Integration Test #3",
+         "start": {"dateTime": "2026-09-16T10:00:00-04:00"},
+         "end": {"dateTime": "2026-09-16T10:30:00-04:00"},
+         "attendees": [{"email": "ana@gaiagroupdevelopment.com", "organizer": True},
+                       {"email": "x@y.com", "responseStatus": "needsAction"}],
+         "extendedProperties": {"private": {"gaia": "1"}}},
+        {"id": "evt-b", "summary": "Dentist",
+         "start": {"dateTime": "2026-09-16T14:00:00-04:00"},
+         "end": {"dateTime": "2026-09-16T15:00:00-04:00"}},
+    ]}
+    async with _http([], events) as http:
+        out = await tools.list_events_on(conn, user, {"date": "2026-09-16"}, http=http)
+    a, b = out["events"]
+    assert a["event_id"] == "evt-a" and a["summary"] == "Calendar Integration Test #3"
+    assert a["starts"].endswith("10:00") and a["ends"].endswith("10:30")
+    assert a["attendees"] == ["x@y.com"]          # organizer excluded
+    assert a["created_by_gaia"] is True
+    assert b["event_id"] == "evt-b" and b["attendees"] == [] and b["created_by_gaia"] is False
+
+
+async def test_list_events_on_schema_requires_a_date():
+    from gaia.capabilities.calendar import CAPABILITY
+    tool = next(t for t in CAPABILITY.tools if t.name == "list_events_on")
+    assert tool.input_schema["required"] == ["date"]

@@ -87,10 +87,50 @@ async def check_availability(conn, user: User, args: dict, *, http=None) -> dict
     ]}
 
 
+async def list_events_on(conn, user: User, args: dict, *, http=None) -> dict:
+    """The user's own events on one day, with ids.
+
+    check_availability strips ids and titles on purpose -- "is 10am free" does
+    not need them -- and list_pending_invites shows only open approvals. So
+    nothing returned an id for an event from an earlier turn, and the model
+    could not cancel duplicates it had itself created: cancel_event needs an
+    id, and history is prose. This is where ids for existing events come from.
+
+    Own calendar only. The attendees listed are the addresses on the
+    developer's own entry, which they can already see.
+    """
+    day = args["date"]
+    try:
+        async with _client(http) as client:
+            events = await cal.list_events(
+                conn, user, http=client,
+                time_min=_local(user, day, "00:00"),
+                time_max=_local(user, day, "00:00") + timedelta(days=1),
+            )
+    except google.RevokedGrant:
+        return _needs_connection(conn, user)
+    return {"date": day, "events": [
+        {
+            "event_id": ev.get("id"),
+            "summary": ev.get("summary"),
+            "starts": _when(user, ev, "start"),
+            "ends": _when(user, ev, "end"),
+            "attendees": [a["email"] for a in ev.get("attendees", [])
+                          if a.get("email") and not a.get("organizer")],
+            "created_by_gaia": (ev.get("extendedProperties", {}).get("private", {})
+                                .get("gaia") == "1"),
+        }
+        for ev in events
+    ]}
+
+
 async def create_event(conn, user: User, args: dict, *, http=None) -> dict:
     start = _local(user, args["date"], args["start_time"])
     end = start + timedelta(minutes=int(args.get("duration_minutes", 60)))
-    extended = {}
+    # Always marked, not only when a lead or commitment is linked, so cleanup
+    # can target what Gaia made and leave the developer's own entries alone.
+    # Private extended properties live on this calendar's copy only.
+    extended = {"gaia": "1"}
     if args.get("lead_id"):
         extended["gaia_lead_id"] = args["lead_id"]
     if args.get("commitment_id"):
@@ -100,7 +140,7 @@ async def create_event(conn, user: User, args: dict, *, http=None) -> dict:
             ev = await cal.create_event(
                 conn, user, summary=args["summary"], start=start, end=end,
                 with_meet=bool(args.get("with_meet")), http=client,
-                extended=extended or None,
+                extended=extended,
             )
     except google.RevokedGrant:
         return _needs_connection(conn, user)
@@ -130,10 +170,10 @@ async def create_event(conn, user: User, args: dict, *, http=None) -> dict:
             "note": "Nobody has been invited. Use propose_invite to ask first."}
 
 
-def _when(user: User, ev: dict) -> str:
-    """An event's start as the user would say it. All-day events carry `date`
-    rather than `dateTime`; those are shown as the date."""
-    start = ev.get("start", {})
+def _when(user: User, ev: dict, key: str = "start") -> str:
+    """An event's start (or end) as the user would say it. All-day events
+    carry `date` rather than `dateTime`; those are shown as the date."""
+    start = ev.get(key, {})
     if "dateTime" not in start:
         return start.get("date", "?")
     local = datetime.fromisoformat(start["dateTime"]).astimezone(ZoneInfo(user.timezone))
@@ -192,11 +232,16 @@ async def list_pending_invites(conn, user: User, args: dict, *, http=None) -> di
                     "event_id": r["event_id"],
                     "emails": list(r["emails"]),
                     "event": _event_brief(user, ev) if ev else None,
+                    "status": "awaiting approval — not sent",
                     "expires_at": r["expires_at"].isoformat(),
                 })
     except google.RevokedGrant:
         return _needs_connection(conn, user)
-    return {"pending": pending}
+    # Said in words. Live, the model read an open row here as "invite already
+    # out" and told the user so; a row in this list is by definition unsent.
+    return {"pending": pending,
+            "note": "None of these have been sent. Each is waiting for the user's yes; "
+                    "confirm_invite with its pending_id is what sends it."}
 
 
 async def confirm_invite(conn, user: User, args: dict, *, http=None) -> dict:

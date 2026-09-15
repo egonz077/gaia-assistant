@@ -4,6 +4,7 @@ from gaia.capabilities.calendar.tools import (
     check_availability,
     confirm_invite,
     create_event,
+    list_events_on,
     list_pending_invites,
     propose_invite,
 )
@@ -20,6 +21,10 @@ CAPABILITY = Capability(
         "unsent. When you read addresses back, name the people — 'Dalila Serrao and two "
         "others at Arquitectonica' — because seven raw addresses are not checkable at a "
         "glance.\n"
+        "\nOnce you have read an invitation back, any affirmative from the user is the "
+        "approval — 'yes', 'send it', 'go', 'do it', 'send #4' — so call confirm_invite. Do "
+        "not ask for a particular word, and never create another event in response to an "
+        "approval: a new event is only for a new request.\n"
         "\nGive dates as a date and a wall-clock time in the user's own day. Never compute a "
         "UTC offset yourself.\n"
         "\nIf a tool says needs_connection, send the user the link it gives you and explain "
@@ -30,6 +35,10 @@ CAPABILITY = Capability(
         "ids are gone. When the user approves an invitation you proposed in an earlier turn, "
         "call list_pending_invites and confirm the matching pending_id. Never call "
         "propose_invite twice for the same event.\n"
+        "\nA row in list_pending_invites has NOT been sent; it is waiting for the user's "
+        "yes. To cancel or refer to an event from an earlier turn, call list_events_on for "
+        "that day and use the event_id it returns; entries with created_by_gaia are the "
+        "ones you made.\n"
     ),
     tools=(
         Tool("check_availability",
@@ -38,6 +47,14 @@ CAPABILITY = Capability(
               "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}},
               "required": ["date"]},
              check_availability),
+        Tool("list_events_on",
+             "The user's own events on a given day, with their event_id, title, times and "
+             "attendees. This is where the id for an existing event comes from — to cancel "
+             "it, or to refer to it. Entries with created_by_gaia are ones you created.",
+             {"type": "object",
+              "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}},
+              "required": ["date"]},
+             list_events_on),
         Tool("create_event",
              "Put an event on the user's own calendar, optionally with a Google Meet link. "
              "Invites nobody — use propose_invite afterwards to add people.",
