@@ -207,22 +207,43 @@ async def oauth_start(t: str = "") -> Response:
         # for a redirect built with an empty client_id.
         raise HTTPException(status_code=503, detail="Google Workspace integration is not configured.")
 
+    # A read, not a consumption: the address we already hold on the row is the
+    # best hint Google can be given about which account to show. Absent (no
+    # address set, or the user is inactive) it is simply not sent -- the
+    # callback is the enforcement point and it refuses those cases with a
+    # message that says why.
+    async with tx() as conn:
+        user = await users_db.get_by_id(conn, user_id)
+        hint = await users_db.get_email(conn, user) if user else None
+
     import secrets
     _evict_expired_states()
     state = secrets.token_urlsafe(24)
     _PENDING_STATES[state] = (str(user_id), time.monotonic())
-    query = urllib.parse.urlencode({
+    params = {
         "client_id": settings.google_client_id,
         "redirect_uri": f"https://{settings.domain}/oauth/callback",
         "response_type": "code",
         "scope": " ".join(OAUTH_SCOPES),
         "access_type": "offline",
-        "prompt": "consent",
+        # select_account, not just consent. The first live consent, on a phone
+        # signed into a personal Gmail and a Workspace account, was auto-routed
+        # to the personal one with no chooser; Google refused it as not-in-org
+        # and the developer had no way to switch. Forcing the chooser is what
+        # gives them the choice at all.
+        "prompt": "select_account consent",
+        # Filters that chooser to the Workspace domain. A hint only -- Google
+        # documents the request parameter as untrusted, which is exactly why
+        # the callback checks the signed hd claim in the id_token instead.
+        "hd": settings.google_domain,
         "state": state,
         # Additive, so the email increment's scopes join this grant rather than
         # replacing it and silently dropping calendar access.
         "include_granted_scopes": "true",
-    })
+    }
+    if hint:
+        params["login_hint"] = hint
+    query = urllib.parse.urlencode(params)
     return Response(status_code=307,
                     headers={"location": f"https://accounts.google.com/o/oauth2/v2/auth?{query}"})
 

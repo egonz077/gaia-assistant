@@ -1,8 +1,9 @@
 import time
 
 from cryptography.fernet import Fernet
+import httpx
 import pytest
-from fastapi.testclient import TestClient
+import pytest_asyncio
 
 from gaia import main
 from gaia.core import crypto, oauth_link
@@ -20,45 +21,60 @@ def configured(monkeypatch):
     monkeypatch.setattr(main.settings, "domain", "gaia.example.com")
 
 
-@pytest.fixture
-def client(monkeypatch, migrated):
-    """Patch the module global, not main.get_pool.
+@pytest_asyncio.fixture
+async def client(monkeypatch, migrated):
+    """Drive the app on pytest's own event loop, against the test pool.
 
-    The routes reach the database through tx(), which resolves its pool by
-    calling get_pool() inside gaia.core.db.pool. Patching main.get_pool leaves
-    tx() pointed at the process-wide pool built from the placeholder
-    DATABASE_URL, and the tests then fail on a connection error that has
-    nothing to do with what they are testing.
+    Two traps here, both of which have cost a real afternoon.
+
+    Patch the module global, not main.get_pool. The routes reach the database
+    through tx(), which resolves its pool by calling get_pool() inside
+    gaia.core.db.pool. Patching main.get_pool alone leaves tx() pointed at the
+    process-wide pool built from the placeholder DATABASE_URL, and the tests
+    fail on a connection error that has nothing to do with what they test.
+
+    ASGITransport, not starlette's TestClient. TestClient runs the app on a
+    separate thread with its own event loop, but the pool was opened on
+    pytest's loop, and psycopg's async pool belongs to the loop it was opened
+    on. With min_size=1, a test holding the `conn` fixture holds that one idle
+    connection, so any route touching the database has to grow the pool --
+    and growth is scheduled on the pool's loop, which is blocked inside
+    (await client.get()). The symptom is a 30-second PoolTimeout with a traceback that
+    points at anyio's portal and nowhere useful. The callback tests only ever
+    passed because none of them combined `ana` with a database-touching route;
+    the first route that did deadlocked six tests at once.
     """
     from gaia.core.db import pool as pool_mod
     monkeypatch.setattr(pool_mod, "_pool", migrated)
     monkeypatch.setattr(main, "get_pool", lambda: migrated)
-    with TestClient(main.app) as c:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=main.app), base_url="http://testserver"
+    ) as c:
         yield c
 
 
-def test_start_redirects_to_google(client, ana):
-    r = client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}", follow_redirects=False)
+async def test_start_redirects_to_google(client, ana):
+    r = (await client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}", follow_redirects=False))
     assert r.status_code == 307
     assert "accounts.google.com" in r.headers["location"]
     assert "calendar.events.owned" in r.headers["location"]
 
 
-def test_start_consumes_nothing(client, ana):
+async def test_start_consumes_nothing(client, ana):
     """WhatsApp fetches URLs to build link previews. If /oauth/start consumed
     the one-time token, Meta's fetcher would burn it before the developer ever
     tapped the link, and every connect would fail with nothing in the logs."""
     token = oauth_link.mint(ana.id)
-    assert client.get(f"/oauth/start?t={token}", follow_redirects=False).status_code == 307
-    assert client.get(f"/oauth/start?t={token}", follow_redirects=False).status_code == 307
+    assert (await client.get(f"/oauth/start?t={token}", follow_redirects=False)).status_code == 307
+    assert (await client.get(f"/oauth/start?t={token}", follow_redirects=False)).status_code == 307
 
 
-def test_start_refuses_a_bad_token(client):
-    assert client.get("/oauth/start?t=rubbish", follow_redirects=False).status_code == 403
+async def test_start_refuses_a_bad_token(client):
+    assert (await client.get("/oauth/start?t=rubbish", follow_redirects=False)).status_code == 403
 
 
-def test_callback_refuses_an_unknown_state(client):
-    assert client.get("/oauth/callback?code=x&state=nonsense").status_code == 403
+async def test_callback_refuses_an_unknown_state(client):
+    assert (await client.get("/oauth/callback?code=x&state=nonsense")).status_code == 403
 
 
 async def test_callback_stores_the_grant(client, migrated, monkeypatch):
@@ -70,11 +86,11 @@ async def test_callback_stores_the_grant(client, migrated, monkeypatch):
         await c.commit()
 
     monkeypatch.setattr(main, "_exchange_code", _fake_exchange("ana@gaiagroupdevelopment.com"))
-    state = client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
-                       follow_redirects=False).headers["location"]
+    state = (await client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+                       follow_redirects=False)).headers["location"]
     state = state.split("state=")[1].split("&")[0]
 
-    assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 200
+    assert (await client.get(f"/oauth/callback?code=x&state={state}")).status_code == 200
     async with migrated.connection() as c:
         from psycopg.rows import dict_row
         c.row_factory = dict_row
@@ -94,10 +110,10 @@ async def test_callback_refuses_a_different_address(client, migrated, monkeypatc
         await c.commit()
 
     monkeypatch.setattr(main, "_exchange_code", _fake_exchange("someone@gaiagroupdevelopment.com"))
-    loc = client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
-                     follow_redirects=False).headers["location"]
+    loc = (await client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+                     follow_redirects=False)).headers["location"]
     state = loc.split("state=")[1].split("&")[0]
-    assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 403
+    assert (await client.get(f"/oauth/callback?code=x&state={state}")).status_code == 403
 
 
 async def test_callback_refuses_a_user_with_no_address(client, migrated, monkeypatch):
@@ -108,10 +124,10 @@ async def test_callback_refuses_a_user_with_no_address(client, migrated, monkeyp
         await c.commit()
 
     monkeypatch.setattr(main, "_exchange_code", _fake_exchange("nomail@gaiagroupdevelopment.com"))
-    loc = client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
-                     follow_redirects=False).headers["location"]
+    loc = (await client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+                     follow_redirects=False)).headers["location"]
     state = loc.split("state=")[1].split("&")[0]
-    assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 403
+    assert (await client.get(f"/oauth/callback?code=x&state={state}")).status_code == 403
 
 
 def _fake_exchange(email: str, hd: str = "gaiagroupdevelopment.com"):
@@ -125,14 +141,14 @@ def _fake_exchange(email: str, hd: str = "gaiagroupdevelopment.com"):
 # Finding 1: a declined consent must not crash the callback with a 500.
 # ---------------------------------------------------------------------------
 
-def test_callback_declined_consent_returns_a_clean_message(client, ana):
+async def test_callback_declined_consent_returns_a_clean_message(client, ana):
     """Google redirects here with error=access_denied and no code when the
     developer clicks Cancel. Declining is the second most likely outcome of
     asking someone for access -- it must read as a refusal, not a crash."""
-    loc = client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}",
-                     follow_redirects=False).headers["location"]
+    loc = (await client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}",
+                     follow_redirects=False)).headers["location"]
     state = loc.split("state=")[1].split("&")[0]
-    r = client.get(f"/oauth/callback?state={state}&error=access_denied")
+    r = (await client.get(f"/oauth/callback?state={state}&error=access_denied"))
     assert r.status_code == 200
     assert "declined" in r.text.lower()
 
@@ -195,10 +211,10 @@ async def test_callback_handles_exchange_failure_without_crashing(client, migrat
         raise main.OAuthExchangeError("invalid_grant")
 
     monkeypatch.setattr(main, "_exchange_code", _broken_exchange)
-    loc = client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
-                     follow_redirects=False).headers["location"]
+    loc = (await client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+                     follow_redirects=False)).headers["location"]
     state = loc.split("state=")[1].split("&")[0]
-    r = client.get(f"/oauth/callback?code=x&state={state}")
+    r = (await client.get(f"/oauth/callback?code=x&state={state}"))
     assert r.status_code == 200
     assert "declined" not in r.text.lower()  # distinct from the Cancel path
 
@@ -207,28 +223,28 @@ async def test_callback_handles_exchange_failure_without_crashing(client, migrat
 # Finding 2: _PENDING_STATES must not grow without bound.
 # ---------------------------------------------------------------------------
 
-def test_start_evicts_expired_states(client, ana):
+async def test_start_evicts_expired_states(client, ana):
     """Every /oauth/start inserts an entry; only a completed callback removes
     one. An abandoned consent -- closed tab, declined offer -- must not sit in
     this long-lived process's memory forever."""
     stale_state = "a-state-nobody-ever-finished"
     main._PENDING_STATES[stale_state] = (str(ana.id), time.monotonic() - main._STATE_TTL_SECONDS - 1)
 
-    client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}", follow_redirects=False)
+    (await client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}", follow_redirects=False))
 
     assert stale_state not in main._PENDING_STATES
 
 
-def test_callback_refuses_an_expired_state(client, ana):
+async def test_callback_refuses_an_expired_state(client, ana):
     """The consent link itself is only good for ten minutes; a pending state
     older than that is already dead and must be refused, not honoured."""
-    loc = client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}",
-                     follow_redirects=False).headers["location"]
+    loc = (await client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}",
+                     follow_redirects=False)).headers["location"]
     state = loc.split("state=")[1].split("&")[0]
     user_id, _ = main._PENDING_STATES[state]
     main._PENDING_STATES[state] = (user_id, time.monotonic() - main._STATE_TTL_SECONDS - 1)
 
-    assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 403
+    assert (await client.get(f"/oauth/callback?code=x&state={state}")).status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +252,9 @@ def test_callback_refuses_an_expired_state(client, ana):
 # half-work when the OAuth client isn't configured. Make that true.
 # ---------------------------------------------------------------------------
 
-def test_start_refuses_when_google_is_not_configured(client, ana, monkeypatch):
+async def test_start_refuses_when_google_is_not_configured(client, ana, monkeypatch):
     monkeypatch.setattr(main.settings, "google_client_id", "")
-    r = client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}", follow_redirects=False)
+    r = (await client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}", follow_redirects=False))
     assert r.status_code == 503
 
 
@@ -250,15 +266,15 @@ def test_start_refuses_when_google_is_not_configured(client, ana, monkeypatch):
 # connected", pointing whoever read the logs at the wrong cause.
 # ---------------------------------------------------------------------------
 
-def test_start_requests_openid_and_email(client, ana):
+async def test_start_requests_openid_and_email(client, ana):
     """openid is what makes the token response carry an id_token, and the
     id_token is what carries the address. Without them the flow has no way to
     learn who consented that does not go through an endpoint our scopes are
     not served by."""
     import urllib.parse
 
-    loc = client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}",
-                     follow_redirects=False).headers["location"]
+    loc = (await client.get(f"/oauth/start?t={oauth_link.mint(ana.id)}",
+                     follow_redirects=False)).headers["location"]
     scope = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query)["scope"][0].split()
     assert "openid" in scope
     assert "email" in scope
@@ -325,10 +341,10 @@ async def test_callback_refuses_an_account_google_does_not_place_in_the_domain(
 
     monkeypatch.setattr(main, "_exchange_code",
                         _fake_exchange("ana@gaiagroupdevelopment.com", hd=""))
-    loc = client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
-                     follow_redirects=False).headers["location"]
+    loc = (await client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+                     follow_redirects=False)).headers["location"]
     state = loc.split("state=")[1].split("&")[0]
-    assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 403
+    assert (await client.get(f"/oauth/callback?code=x&state={state}")).status_code == 403
 
 
 async def test_callback_refuses_a_grant_with_no_email_claim(client, migrated, monkeypatch):
@@ -342,7 +358,53 @@ async def test_callback_refuses_a_grant_with_no_email_claim(client, migrated, mo
         await c.commit()
 
     monkeypatch.setattr(main, "_exchange_code", _fake_exchange(""))
-    loc = client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
-                     follow_redirects=False).headers["location"]
+    loc = (await client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+                     follow_redirects=False)).headers["location"]
     state = loc.split("state=")[1].split("&")[0]
-    assert client.get(f"/oauth/callback?code=x&state={state}").status_code == 403
+    assert (await client.get(f"/oauth/callback?code=x&state={state}")).status_code == 403
+
+
+async def test_start_steers_google_to_the_workspace_account(client, migrated):
+    """The first live consent, on a phone signed into a personal Gmail and a
+    Workspace account, was auto-routed to the personal one with no chooser.
+    Google then refused it as not-in-org, and the developer had no way to
+    switch. hd filters the chooser to the domain, login_hint preselects the
+    address we already hold, select_account forces the chooser to appear at
+    all. All three are hints -- the signed hd claim in the callback stays the
+    check."""
+    import urllib.parse
+    from psycopg.rows import dict_row
+
+    async with migrated.connection() as c:
+        c.row_factory = dict_row
+        user = await users_db.create_user(
+            c, name="Ana", wa_id="13055558810", email="ana@gaiagroupdevelopment.com")
+        await c.commit()
+
+    loc = (await client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+                     follow_redirects=False)).headers["location"]
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query)
+    assert q["hd"] == ["gaiagroupdevelopment.com"]
+    assert q["login_hint"] == ["ana@gaiagroupdevelopment.com"]
+    prompt = q["prompt"][0].split()
+    assert "select_account" in prompt and "consent" in prompt
+
+
+async def test_start_omits_login_hint_when_no_address_is_set(client, migrated):
+    """No address on the row means nothing to preselect, but the domain
+    filter and the chooser still apply -- the callback is what refuses this
+    user, and it will, with a message that says why."""
+    import urllib.parse
+    from psycopg.rows import dict_row
+
+    async with migrated.connection() as c:
+        c.row_factory = dict_row
+        user = await users_db.create_user(c, name="NoMail", wa_id="13055558811")
+        await c.commit()
+
+    loc = (await client.get(f"/oauth/start?t={oauth_link.mint(user.id)}",
+                     follow_redirects=False)).headers["location"]
+    q = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query)
+    assert "login_hint" not in q
+    assert q["hd"] == ["gaiagroupdevelopment.com"]
+    assert "select_account" in q["prompt"][0].split()
