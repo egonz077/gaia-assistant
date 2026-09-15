@@ -70,6 +70,11 @@ OWNERSHIP_SCOPED = {
     "gaia.core.db.messages.seen":
         "WhatsApp redelivery dedup, keyed by wa_msg_id. Roster-independent by "
         "design, which is why test_db_signatures exempts it too.",
+    "gaia.core.db.pending_invites.claim":
+        "one person's own pending approval. Ownership, not visibility: a "
+        "colleague may not confirm an invitation on someone else's behalf at "
+        "any visibility setting, which is why the table has no visibility "
+        "column.",
     "gaia.core.db.users.get_by_id":
         "resolving the OAuth callback's state to the user who started the "
         "flow. users carries no visibility column at all -- it is the table "
